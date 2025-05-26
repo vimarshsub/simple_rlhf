@@ -87,6 +87,11 @@ class RLHFTrainer:
             tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
+                tokenizer.pad_token_id = tokenizer.eos_token_id
+            
+            # Ensure padding side is correct for reward training
+            if hasattr(self, '_reward_training') and self._reward_training:
+                tokenizer.padding_side = "right"
             
             # Configure quantization if requested
             if quantize:
@@ -313,8 +318,8 @@ class RLHFTrainer:
             training_args = RewardConfig(
                 output_dir=output_dir,
                 num_train_epochs=3,
-                per_device_train_batch_size=2,  # Reduced batch size for stability
-                gradient_accumulation_steps=4,
+                per_device_train_batch_size=1,  # Reduced to 1 to avoid padding issues
+                gradient_accumulation_steps=8,  # Increased to maintain effective batch size
                 gradient_checkpointing=True,
                 learning_rate=1e-5,
                 report_to="none",
