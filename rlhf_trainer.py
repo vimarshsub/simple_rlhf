@@ -277,14 +277,35 @@ class RLHFTrainer:
                 optim="paged_adamw_32bit",
                 lr_scheduler_type="cosine",
                 warmup_ratio=0.1,
+                max_seq_length=512,  # Add maximum sequence length
             )
             
-            # Initialize reward trainer with processing_class parameter
+            # Preprocess the dataset to ensure consistent lengths
+            def preprocess_function(examples):
+                # Tokenize chosen and rejected responses
+                chosen_tokens = tokenizer(examples["chosen"], padding="max_length", truncation=True, max_length=512)
+                rejected_tokens = tokenizer(examples["rejected"], padding="max_length", truncation=True, max_length=512)
+                
+                return {
+                    "chosen_input_ids": chosen_tokens["input_ids"],
+                    "chosen_attention_mask": chosen_tokens["attention_mask"],
+                    "rejected_input_ids": rejected_tokens["input_ids"],
+                    "rejected_attention_mask": rejected_tokens["attention_mask"],
+                }
+            
+            # Apply preprocessing
+            processed_dataset = dataset.map(
+                preprocess_function,
+                batched=True,
+                remove_columns=dataset.column_names
+            )
+            
+            # Initialize reward trainer with processed dataset
             trainer = RewardTrainer(
                 model=model,
                 args=training_args,
-                train_dataset=dataset,
-                processing_class=tokenizer,
+                train_dataset=processed_dataset,
+                tokenizer=tokenizer,
             )
             
             # Train the model
