@@ -232,11 +232,12 @@ class RLHFTrainer:
                 warmup_ratio=0.1,
             )
             
-            # Initialize reward trainer - FIXED: removed tokenizer parameter
+            # Initialize reward trainer with processing_class parameter
             trainer = RewardTrainer(
                 model=model,
                 args=training_args,
                 train_dataset=dataset,
+                processing_class=tokenizer,
             )
             
             # Train the model
