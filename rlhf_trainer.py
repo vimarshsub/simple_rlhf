@@ -134,43 +134,28 @@ class RLHFTrainer:
             logger.warning("No training data available")
             return None
         
-        # Convert to HuggingFace dataset
-        dataset_dict = {
+        # Convert to intermediate dataset format
+        df = pd.DataFrame({
             "prompt": [item["prompt"] for item in training_data],
-            "completion": [item["completion"] for item in training_data],
+            "output": [item["completion"] for item in training_data],
             "rating": [item["rating"] for item in training_data]
-        }
+        })
         
-        dataset = Dataset.from_dict(dataset_dict)
-        logger.info(f"Prepared dataset with {len(dataset)} examples")
-        
-        return dataset
+        # Transform to preference pairs format using the same logic as CSV preparation
+        return self._transform_to_preference_pairs(df)
     
-    def prepare_dataset_from_csv(self, csv_path):
+    def _transform_to_preference_pairs(self, df):
         """
-        Prepare a dataset from a CSV file.
+        Transform a dataframe with 'prompt', 'output', 'rating' columns
+        into a dataset with 'chosen' and 'rejected' columns for RewardTrainer.
         
         Args:
-            csv_path (str): Path to the CSV file
+            df (pd.DataFrame): DataFrame with prompt, output, rating columns
             
         Returns:
-            Dataset: HuggingFace dataset for training
+            Dataset: HuggingFace dataset with chosen and rejected columns
         """
         try:
-            # Read CSV
-            df = pd.read_csv(csv_path)
-            required_columns = ['prompt', 'output', 'rating']
-            
-            # Validate CSV format
-            for col in required_columns:
-                if col not in df.columns:
-                    logger.error(f"CSV file missing required column: {col}")
-                    return None
-            
-            # For RewardTrainer, we need to create preference pairs with 'chosen' and 'rejected' columns
-            # Since we only have single outputs with ratings, we'll create synthetic pairs
-            # by using high-rated outputs as 'chosen' and creating alternative outputs as 'rejected'
-            
             # Sort by prompt and rating to group similar prompts
             df = df.sort_values(by=['prompt', 'rating'], ascending=[True, False])
             
@@ -212,6 +197,34 @@ class RLHFTrainer:
             logger.info(f"Prepared preference dataset with {len(dataset)} examples for reward modeling")
             
             return dataset
+            
+        except Exception as e:
+            logger.error(f"Error transforming to preference pairs: {str(e)}")
+            return None
+    
+    def prepare_dataset_from_csv(self, csv_path):
+        """
+        Prepare a dataset from a CSV file.
+        
+        Args:
+            csv_path (str): Path to the CSV file
+            
+        Returns:
+            Dataset: HuggingFace dataset for training
+        """
+        try:
+            # Read CSV
+            df = pd.read_csv(csv_path)
+            required_columns = ['prompt', 'output', 'rating']
+            
+            # Validate CSV format
+            for col in required_columns:
+                if col not in df.columns:
+                    logger.error(f"CSV file missing required column: {col}")
+                    return None
+            
+            # Transform to preference pairs format
+            return self._transform_to_preference_pairs(df)
         
         except Exception as e:
             logger.error(f"Error preparing dataset from CSV: {str(e)}")
