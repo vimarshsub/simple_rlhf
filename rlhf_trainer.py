@@ -74,43 +74,59 @@ class RLHFTrainer:
     
     def setup_model(self, quantize=True):
         """
-        Set up the model with quantization for memory efficiency.
+        Set up the model and tokenizer.
         
         Args:
             quantize (bool): Whether to use quantization
             
         Returns:
-            The configured model and tokenizer
+            tuple: (model, tokenizer)
         """
-        tokenizer = self.setup_tokenizer()
-        
-        # Get token from environment variable
-        hf_token = os.environ.get("HUGGING_FACE_HUB_TOKEN")
-        
-        # Configure quantization for memory efficiency on L4 GPU
-        if quantize:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16
-            )
+        try:
+            # Load tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
             
-            model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                quantization_config=bnb_config,
-                device_map="auto",
-                token=hf_token
-            )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                torch_dtype=torch.float16,
-                device_map="auto",
-                token=hf_token
-            )
-        
-        return model, tokenizer
+            # Configure quantization if requested
+            if quantize:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16
+                )
+            else:
+                bnb_config = None
+            
+            # Load model - use AutoModelForCausalLM for generation, AutoModelForSequenceClassification for reward
+            if hasattr(self, '_reward_training') and self._reward_training:
+                # For reward model training, use sequence classification
+                from transformers import AutoModelForSequenceClassification
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    MODEL_NAME,
+                    num_labels=1,
+                    torch_dtype=torch.bfloat16,
+                    device_map="auto",
+                    quantization_config=bnb_config,
+                    trust_remote_code=True
+                )
+            else:
+                # For text generation, use causal LM
+                model = AutoModelForCausalLM.from_pretrained(
+                    MODEL_NAME,
+                    torch_dtype=torch.bfloat16,
+                    device_map="auto",
+                    quantization_config=bnb_config,
+                    trust_remote_code=True
+                )
+            
+            logger.info(f"Model and tokenizer loaded successfully: {MODEL_NAME}")
+            return model, tokenizer
+            
+        except Exception as e:
+            logger.error(f"Error setting up model: {str(e)}")
+            raise
     
     def prepare_dataset_from_db(self, db_path="data/feedback.db", min_rating=None):
         """
@@ -202,32 +218,53 @@ class RLHFTrainer:
             logger.error(f"Error transforming to preference pairs: {str(e)}")
             return None
     
-    def prepare_dataset_from_csv(self, csv_path):
+    def prepare_dataset_from_csv(self, csv_file, min_rating=3):
         """
-        Prepare a dataset from a CSV file.
+        Prepare dataset from CSV file for RLHF training.
         
         Args:
-            csv_path (str): Path to the CSV file
+            csv_file (str): Path to CSV file with columns: prompt, output, rating
+            min_rating (int): Minimum rating to consider as "chosen"
             
         Returns:
-            Dataset: HuggingFace dataset for training
+            Dataset: Processed dataset ready for training
         """
         try:
-            # Read CSV
-            df = pd.read_csv(csv_path)
-            required_columns = ['prompt', 'output', 'rating']
+            # Load CSV data
+            df = pd.read_csv(csv_file)
+            logger.info(f"Loaded {len(df)} rows from {csv_file}")
             
-            # Validate CSV format
-            for col in required_columns:
-                if col not in df.columns:
-                    logger.error(f"CSV file missing required column: {col}")
-                    return None
+            # Group by prompt and create preference pairs
+            grouped = df.groupby('prompt')
+            preference_data = []
             
-            # Transform to preference pairs format
-            return self._transform_to_preference_pairs(df)
-        
+            for prompt, group in grouped:
+                # Sort by rating to get best and worst responses
+                sorted_group = group.sort_values('rating', ascending=False)
+                
+                if len(sorted_group) >= 2:
+                    best = sorted_group.iloc[0]
+                    worst = sorted_group.iloc[-1]
+                    
+                    # Only create pair if there's a clear preference
+                    if best['rating'] >= min_rating and worst['rating'] < min_rating:
+                        preference_data.append({
+                            'chosen': f"{prompt}\n{best['output']}",
+                            'rejected': f"{prompt}\n{worst['output']}"
+                        })
+            
+            logger.info(f"Created {len(preference_data)} preference pairs")
+            
+            if len(preference_data) == 0:
+                logger.error("No preference pairs created. Check your data and min_rating threshold.")
+                return None
+            
+            # Convert to HuggingFace dataset
+            dataset = Dataset.from_list(preference_data)
+            return dataset
+            
         except Exception as e:
-            logger.error(f"Error preparing dataset from CSV: {str(e)}")
+            logger.error(f"Error preparing dataset: {str(e)}")
             return None
     
     def train_reward_model(self, dataset, output_dir=None):
@@ -235,7 +272,7 @@ class RLHFTrainer:
         Train a reward model based on human feedback.
         
         Args:
-            dataset: HuggingFace dataset with prompts, completions, and ratings
+            dataset: HuggingFace dataset with chosen and rejected responses
             output_dir (str, optional): Directory to save the model
             
         Returns:
@@ -247,6 +284,9 @@ class RLHFTrainer:
         logger.info("Setting up reward model training...")
         
         try:
+            # Set flag for reward training to use correct model type
+            self._reward_training = True
+            
             # Set up model and tokenizer
             model, tokenizer = self.setup_model(quantize=False)  # Disable quantization for compatibility
             
@@ -256,7 +296,7 @@ class RLHFTrainer:
                 lora_alpha=32,
                 lora_dropout=0.05,
                 bias="none",
-                task_type="CAUSAL_LM",
+                task_type="SEQ_CLS",  # Sequence classification for reward model
                 target_modules=["c_attn", "c_proj"]  # Changed for GPT-2 architecture
             )
             
@@ -289,21 +329,27 @@ class RLHFTrainer:
             trainer = RewardTrainer(
                 model=model,
                 args=training_args,
-                train_dataset=dataset,  # Use original dataset
-                processing_class=tokenizer,
+                train_dataset=dataset,
+                processing_class=tokenizer,  # Changed from tokenizer to processing_class
             )
             
             # Train the model
+            logger.info("Starting reward model training...")
             trainer.train()
             
-            # Save the trained model
-            trainer.save_model(output_dir)
-            logger.info(f"Reward model trained and saved to {output_dir}")
+            # Save the model
+            trainer.save_model()
+            logger.info(f"Reward model saved to {output_dir}")
+            
+            # Reset flag
+            self._reward_training = False
             
             return True
-        
+            
         except Exception as e:
             logger.error(f"Error training reward model: {str(e)}")
+            # Reset flag on error
+            self._reward_training = False
             return False
     
     def train_with_rlhf(self, dataset, reward_model_path=None, output_dir=None):
@@ -513,7 +559,7 @@ class RLHFTrainer:
         
         # Prepare dataset
         if data_source.endswith('.csv'):
-            dataset = self.prepare_dataset_from_csv(data_source)
+            dataset = self.prepare_dataset_from_csv(data_source, min_rating)
         else:
             dataset = self.prepare_dataset_from_db(data_source, min_rating)
         
