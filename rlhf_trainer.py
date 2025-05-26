@@ -65,7 +65,10 @@ class RLHFTrainer:
         Returns:
             The configured tokenizer
         """
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        # Get token from environment variable
+        hf_token = os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name, token=hf_token)
         tokenizer.pad_token = tokenizer.eos_token
         return tokenizer
     
@@ -81,6 +84,9 @@ class RLHFTrainer:
         """
         tokenizer = self.setup_tokenizer()
         
+        # Get token from environment variable
+        hf_token = os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        
         # Configure quantization for memory efficiency on L4 GPU
         if quantize:
             bnb_config = BitsAndBytesConfig(
@@ -93,13 +99,15 @@ class RLHFTrainer:
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 quantization_config=bnb_config,
-                device_map="auto"
+                device_map="auto",
+                token=hf_token
             )
         else:
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.float16,
-                device_map="auto"
+                device_map="auto",
+                token=hf_token
             )
         
         return model, tokenizer
@@ -224,11 +232,10 @@ class RLHFTrainer:
                 warmup_ratio=0.1,
             )
             
-            # Initialize reward trainer
+            # Initialize reward trainer - FIXED: removed tokenizer parameter
             trainer = RewardTrainer(
                 model=model,
                 args=training_args,
-                tokenizer=tokenizer,
                 train_dataset=dataset,
             )
             
@@ -266,6 +273,9 @@ class RLHFTrainer:
         logger.info("Setting up RLHF training...")
         
         try:
+            # Get token from environment variable
+            hf_token = os.environ.get("HUGGING_FACE_HUB_TOKEN")
+            
             # Set up tokenizer
             tokenizer = self.setup_tokenizer()
             
@@ -273,7 +283,8 @@ class RLHFTrainer:
             model = AutoModelForCausalLMWithValueHead.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.float16,
-                device_map="auto"
+                device_map="auto",
+                token=hf_token
             )
             
             # Configure LoRA for parameter-efficient fine-tuning
@@ -294,7 +305,8 @@ class RLHFTrainer:
             reward_model = AutoModelForCausalLM.from_pretrained(
                 reward_model_path,
                 torch_dtype=torch.float16,
-                device_map="auto"
+                device_map="auto",
+                token=hf_token
             )
             
             # Create reward function
@@ -380,25 +392,32 @@ class RLHFTrainer:
             str: Generated text
         """
         try:
+            # Get token from environment variable
+            hf_token = os.environ.get("HUGGING_FACE_HUB_TOKEN")
+            
             # Determine which model to use
             if model_path is None:
-                # Try RLHF model first, fall back to base model
-                if os.path.exists(self.rlhf_model_path):
-                    model_path = self.rlhf_model_path
-                else:
-                    model_path = self.model_name
+                # Always use the base Hugging Face model if no specific model is provided
+                model_path = self.model_name
             
             logger.info(f"Generating text using model: {model_path}")
             
             # Load model and tokenizer
-            tokenizer = AutoTokenizer.from_pretrained(model_path)
-            tokenizer.pad_token = tokenizer.eos_token
-            
-            model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype=torch.float16,
-                device_map="auto"
-            )
+            try:
+                # Try to load the model with authentication
+                tokenizer = AutoTokenizer.from_pretrained(model_path, token=hf_token)
+                tokenizer.pad_token = tokenizer.eos_token
+                
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    token=hf_token
+                )
+            except Exception as model_error:
+                # If loading fails, log the error and re-raise
+                logger.error(f"Failed to load model from {model_path}: {str(model_error)}")
+                raise
             
             # Generate text
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
@@ -423,7 +442,7 @@ class RLHFTrainer:
         
         except Exception as e:
             logger.error(f"Error generating text: {str(e)}")
-            return None
+            return f"Error generating text: {str(e)}"
     
     def run_full_training_pipeline(self, data_source, min_rating=3):
         """
@@ -462,7 +481,6 @@ class RLHFTrainer:
         
         logger.info("Full RLHF training pipeline completed successfully")
         return True
-
 
 # Example usage
 if __name__ == "__main__":
