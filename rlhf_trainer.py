@@ -305,7 +305,7 @@ class RLHFTrainer:
                 model=model,
                 args=training_args,
                 train_dataset=processed_dataset,
-                tokenizer=tokenizer,
+                processing_class=tokenizer,
             )
             
             # Train the model
