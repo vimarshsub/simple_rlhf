@@ -10,6 +10,7 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import logging
+import threading
 
 # Configure logging
 logging.basicConfig(
@@ -35,6 +36,7 @@ class FeedbackDatabase:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = None
         self.cursor = None
+        self.lock = threading.RLock()  # Add thread lock for synchronization
         
         logger.info(f"Initializing feedback database at {db_path}")
         self._connect()
@@ -43,7 +45,8 @@ class FeedbackDatabase:
     def _connect(self):
         """Establish connection to the database."""
         try:
-            self.conn = sqlite3.connect(self.db_path)
+            # Add check_same_thread=False to allow cross-thread usage
+            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self.cursor = self.conn.cursor()
             logger.info("Connected to database")
         except sqlite3.Error as e:
@@ -53,31 +56,32 @@ class FeedbackDatabase:
     def _create_tables(self):
         """Create necessary tables if they don't exist."""
         try:
-            # Table for storing prompts and outputs together for simplicity
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS prompt_outputs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                prompt TEXT NOT NULL,
-                output TEXT NOT NULL,
-                model_version TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            # Table for storing human feedback
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS feedback (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                prompt_output_id INTEGER NOT NULL,
-                rating INTEGER NOT NULL,
-                comments TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (prompt_output_id) REFERENCES prompt_outputs (id)
-            )
-            ''')
-            
-            self.conn.commit()
-            logger.info("Database tables created successfully")
+            with self.lock:  # Use lock for thread safety
+                # Table for storing prompts and outputs together for simplicity
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS prompt_outputs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prompt TEXT NOT NULL,
+                    output TEXT NOT NULL,
+                    model_version TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                
+                # Table for storing human feedback
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prompt_output_id INTEGER NOT NULL,
+                    rating INTEGER NOT NULL,
+                    comments TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (prompt_output_id) REFERENCES prompt_outputs (id)
+                )
+                ''')
+                
+                self.conn.commit()
+                logger.info("Database tables created successfully")
         except sqlite3.Error as e:
             logger.error(f"Error creating tables: {str(e)}")
             raise
@@ -95,17 +99,19 @@ class FeedbackDatabase:
             int: ID of the inserted prompt-output pair
         """
         try:
-            self.cursor.execute(
-                "INSERT INTO prompt_outputs (prompt, output, model_version) VALUES (?, ?, ?)",
-                (prompt, output, model_version)
-            )
-            self.conn.commit()
-            prompt_output_id = self.cursor.lastrowid
-            logger.info(f"Added prompt-output pair with ID {prompt_output_id}")
-            return prompt_output_id
+            with self.lock:  # Use lock for thread safety
+                self.cursor.execute(
+                    "INSERT INTO prompt_outputs (prompt, output, model_version) VALUES (?, ?, ?)",
+                    (prompt, output, model_version)
+                )
+                self.conn.commit()
+                prompt_output_id = self.cursor.lastrowid
+                logger.info(f"Added prompt-output pair with ID {prompt_output_id}")
+                return prompt_output_id
         except sqlite3.Error as e:
             logger.error(f"Error adding prompt-output pair: {str(e)}")
-            self.conn.rollback()
+            with self.lock:
+                self.conn.rollback()
             return None
     
     def add_feedback(self, prompt_output_id, rating, comments=None):
@@ -121,17 +127,19 @@ class FeedbackDatabase:
             int: ID of the inserted feedback
         """
         try:
-            self.cursor.execute(
-                "INSERT INTO feedback (prompt_output_id, rating, comments) VALUES (?, ?, ?)",
-                (prompt_output_id, rating, comments)
-            )
-            self.conn.commit()
-            feedback_id = self.cursor.lastrowid
-            logger.info(f"Added feedback with ID {feedback_id} for prompt-output {prompt_output_id}")
-            return feedback_id
+            with self.lock:  # Use lock for thread safety
+                self.cursor.execute(
+                    "INSERT INTO feedback (prompt_output_id, rating, comments) VALUES (?, ?, ?)",
+                    (prompt_output_id, rating, comments)
+                )
+                self.conn.commit()
+                feedback_id = self.cursor.lastrowid
+                logger.info(f"Added feedback with ID {feedback_id} for prompt-output {prompt_output_id}")
+                return feedback_id
         except sqlite3.Error as e:
             logger.error(f"Error adding feedback: {str(e)}")
-            self.conn.rollback()
+            with self.lock:
+                self.conn.rollback()
             return None
     
     def get_all_prompt_outputs(self, with_feedback_only=False):
@@ -145,36 +153,37 @@ class FeedbackDatabase:
             list: List of dictionaries containing prompt-output pairs
         """
         try:
-            query = """
-            SELECT po.id, po.prompt, po.output, po.model_version, 
-                   f.rating, f.comments, po.created_at
-            FROM prompt_outputs po
-            """
-            
-            if with_feedback_only:
-                query += " JOIN feedback f ON po.id = f.prompt_output_id "
-            else:
-                query += " LEFT JOIN feedback f ON po.id = f.prompt_output_id "
+            with self.lock:  # Use lock for thread safety
+                query = """
+                SELECT po.id, po.prompt, po.output, po.model_version, 
+                       f.rating, f.comments, po.created_at
+                FROM prompt_outputs po
+                """
                 
-            query += " ORDER BY po.created_at DESC "
-            
-            self.cursor.execute(query)
-            rows = self.cursor.fetchall()
-            
-            results = []
-            for row in rows:
-                results.append({
-                    'id': row[0],
-                    'prompt': row[1],
-                    'output': row[2],
-                    'model_version': row[3],
-                    'rating': row[4],
-                    'comments': row[5],
-                    'created_at': row[6]
-                })
-            
-            logger.info(f"Retrieved {len(results)} prompt-output pairs")
-            return results
+                if with_feedback_only:
+                    query += " JOIN feedback f ON po.id = f.prompt_output_id "
+                else:
+                    query += " LEFT JOIN feedback f ON po.id = f.prompt_output_id "
+                    
+                query += " ORDER BY po.created_at DESC "
+                
+                self.cursor.execute(query)
+                rows = self.cursor.fetchall()
+                
+                results = []
+                for row in rows:
+                    results.append({
+                        'id': row[0],
+                        'prompt': row[1],
+                        'output': row[2],
+                        'model_version': row[3],
+                        'rating': row[4],
+                        'comments': row[5],
+                        'created_at': row[6]
+                    })
+                
+                logger.info(f"Retrieved {len(results)} prompt-output pairs")
+                return results
         except sqlite3.Error as e:
             logger.error(f"Error retrieving prompt-output pairs: {str(e)}")
             return []
@@ -190,32 +199,33 @@ class FeedbackDatabase:
             list: List of dictionaries containing training data
         """
         try:
-            query = """
-            SELECT po.prompt, po.output, f.rating
-            FROM prompt_outputs po
-            JOIN feedback f ON po.id = f.prompt_output_id
-            """
-            
-            params = []
-            if min_rating is not None:
-                query += " WHERE f.rating >= ? "
-                params.append(min_rating)
+            with self.lock:  # Use lock for thread safety
+                query = """
+                SELECT po.prompt, po.output, f.rating
+                FROM prompt_outputs po
+                JOIN feedback f ON po.id = f.prompt_output_id
+                """
                 
-            query += " ORDER BY f.rating DESC "
-            
-            self.cursor.execute(query, params)
-            rows = self.cursor.fetchall()
-            
-            results = []
-            for row in rows:
-                results.append({
-                    'prompt': row[0],
-                    'completion': row[1],
-                    'rating': row[2]
-                })
-            
-            logger.info(f"Retrieved {len(results)} training examples")
-            return results
+                params = []
+                if min_rating is not None:
+                    query += " WHERE f.rating >= ? "
+                    params.append(min_rating)
+                    
+                query += " ORDER BY f.rating DESC "
+                
+                self.cursor.execute(query, params)
+                rows = self.cursor.fetchall()
+                
+                results = []
+                for row in rows:
+                    results.append({
+                        'prompt': row[0],
+                        'completion': row[1],
+                        'rating': row[2]
+                    })
+                
+                logger.info(f"Retrieved {len(results)} training examples")
+                return results
         except sqlite3.Error as e:
             logger.error(f"Error retrieving training data: {str(e)}")
             return []
@@ -408,8 +418,9 @@ class FeedbackDatabase:
     def close(self):
         """Close the database connection."""
         if self.conn:
-            self.conn.close()
-            logger.info("Database connection closed")
+            with self.lock:  # Use lock for thread safety
+                self.conn.close()
+                logger.info("Database connection closed")
 
 
 # Example usage
@@ -423,6 +434,7 @@ if __name__ == "__main__":
     db.import_from_csv("data/example_feedback.csv")
     
     # Export training data
-    db.export_training_data_json("data/training_data.json")
+    db.export_training_data_json("data/training_data.json", min_rating=3)
     
+    # Close connection
     db.close()
