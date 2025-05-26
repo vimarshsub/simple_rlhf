@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Default model configuration
-MODEL_NAME = "mistralai/Mistral-7B-v0.1"  # Base model
+MODEL_NAME = "gpt2"  # Changed from mistralai/Mistral-7B-v0.1 to gpt2 for smaller size
 REWARD_MODEL_NAME = "reward_model"  # Name for saved reward model
 RLHF_MODEL_NAME = "rlhf_model"  # Name for saved RLHF model
 
@@ -248,7 +248,7 @@ class RLHFTrainer:
         
         try:
             # Set up model and tokenizer
-            model, tokenizer = self.setup_model()
+            model, tokenizer = self.setup_model(quantize=False)  # Disable quantization for compatibility
             
             # Apply LoRA for parameter-efficient fine-tuning
             peft_config = LoraConfig(
@@ -257,54 +257,39 @@ class RLHFTrainer:
                 lora_dropout=0.05,
                 bias="none",
                 task_type="CAUSAL_LM",
-                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"]
+                target_modules=["c_attn", "c_proj"]  # Changed for GPT-2 architecture
             )
             
             # Prepare model for training
             model = prepare_model_for_kbit_training(model)
             model = get_peft_model(model, peft_config)
             
+            # Ensure model is in training mode and gradients are enabled
+            model.train()
+            for param in model.parameters():
+                param.requires_grad = True
+            
             # Configure reward training
             training_args = RewardConfig(
                 output_dir=output_dir,
                 num_train_epochs=3,
-                per_device_train_batch_size=4,
+                per_device_train_batch_size=2,  # Reduced batch size for stability
                 gradient_accumulation_steps=4,
                 gradient_checkpointing=True,
                 learning_rate=1e-5,
                 report_to="none",
                 remove_unused_columns=False,
-                optim="paged_adamw_32bit",
+                optim="adamw_torch",  # Changed from paged_adamw_32bit to standard adamw
                 lr_scheduler_type="cosine",
                 warmup_ratio=0.1,
-                max_length=512,  # Changed from max_seq_length to max_length
+                max_length=256,  # Reduced max length for stability
             )
             
-            # Preprocess the dataset to ensure consistent lengths
-            def preprocess_function(examples):
-                # Tokenize chosen and rejected responses
-                chosen_tokens = tokenizer(examples["chosen"], padding="max_length", truncation=True, max_length=512)
-                rejected_tokens = tokenizer(examples["rejected"], padding="max_length", truncation=True, max_length=512)
-                
-                return {
-                    "chosen_input_ids": chosen_tokens["input_ids"],
-                    "chosen_attention_mask": chosen_tokens["attention_mask"],
-                    "rejected_input_ids": rejected_tokens["input_ids"],
-                    "rejected_attention_mask": rejected_tokens["attention_mask"],
-                }
-            
-            # Apply preprocessing
-            processed_dataset = dataset.map(
-                preprocess_function,
-                batched=True,
-                remove_columns=dataset.column_names
-            )
-            
-            # Initialize reward trainer with processed dataset
+            # Initialize reward trainer without custom preprocessing
             trainer = RewardTrainer(
                 model=model,
                 args=training_args,
-                train_dataset=processed_dataset,
+                train_dataset=dataset,  # Use original dataset
                 processing_class=tokenizer,
             )
             
@@ -363,7 +348,7 @@ class RLHFTrainer:
                 lora_dropout=0.05,
                 bias="none",
                 task_type="CAUSAL_LM",
-                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"]
+                target_modules=["c_attn", "c_proj"]  # Changed for GPT-2 architecture
             )
             
             # Prepare model for training
