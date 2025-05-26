@@ -34,7 +34,8 @@ def generate_content(prompt, use_rlhf_model=False, max_length=512, temperature=0
             if os.path.exists(rlhf_path):
                 model_path = rlhf_path
             else:
-                return "RLHF model not found. Please train the model first or uncheck 'Use RLHF Model'."
+                logger.warning("RLHF model not found, falling back to base model")
+                # Continue with model_path as None, which will use the base model
         
         # Generate text
         output = trainer.generate_text(
@@ -44,8 +45,16 @@ def generate_content(prompt, use_rlhf_model=False, max_length=512, temperature=0
             temperature=temperature
         )
         
-        # Store in database
-        db.add_prompt_output(prompt, output)
+        if output is None:
+            return "Failed to generate content. Please try again with different parameters."
+        
+        # Only store in database if generation was successful
+        if not output.startswith("Error generating text:"):
+            try:
+                db.add_prompt_output(prompt, output)
+            except Exception as db_error:
+                logger.error(f"Error storing in database: {str(db_error)}")
+                # Continue even if database storage fails
         
         return output
     
