@@ -1,0 +1,11 @@
+.git/
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+venv/
+data/*.csv
+data/*.json
+models/reward_model/*
+models/rlhf_model/*
+logs/*
