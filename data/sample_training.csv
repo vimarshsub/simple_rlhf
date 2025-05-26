@@ -1,0 +1,74 @@
+prompt,output,rating
+"Explain how to make a simple HTTP server in Python","Here's how to create a simple HTTP server in Python using the built-in http.server module:
+
+1. Import the module:
+import http.server
+import socketserver
+
+2. Set the port number:
+PORT = 8000
+
+3. Create the server:
+Handler = http.server.SimpleHTTPRequestHandler
+httpd = socketserver.TCPServer(("", PORT), Handler)
+
+4. Start the server:
+print(f'Serving at port {PORT}')
+httpd.serve_forever()
+
+This will serve files from the current directory. You can access it at http://localhost:8000",5
+"Explain how to make a simple HTTP server in Python","To make a server in Python, you can use http.server. Just import it and run it. It's pretty easy.",3
+"Write a function to calculate fibonacci numbers","Here's an efficient implementation of the Fibonacci function using dynamic programming:
+
+def fibonacci(n):
+    if n <= 0:
+        return 0
+    elif n == 1:
+        return 1
+    
+    # Initialize array to store computed values
+    fib = [0] * (n + 1)
+    fib[1] = 1
+    
+    # Compute values
+    for i in range(2, n + 1):
+        fib[i] = fib[i-1] + fib[i-2]
+    
+    return fib[n]
+
+This implementation:
+- Uses O(n) time complexity
+- Uses O(n) space complexity
+- Avoids redundant calculations
+- Handles edge cases properly",5
+"Write a function to calculate fibonacci numbers","def fib(n):
+    if n <= 1:
+        return n
+    return fib(n-1) + fib(n-2)
+
+This is a simple recursive implementation.",2
+"Explain the concept of dependency injection","Dependency Injection (DI) is a design pattern that implements Inversion of Control (IoC) for resolving dependencies. Here's a comprehensive explanation:
+
+1. Core Concept:
+- Instead of creating dependencies inside a class, they are provided from outside
+- This makes the code more modular, testable, and maintainable
+
+2. Benefits:
+- Loose coupling between components
+- Easier testing through mock objects
+- More flexible and maintainable code
+- Better separation of concerns
+
+3. Common Implementation:
+- Constructor injection
+- Setter injection
+- Interface injection
+
+4. Example in Python:
+class UserService:
+    def __init__(self, user_repository):
+        self.user_repository = user_repository  # Dependency injected
+
+    def get_user(self, user_id):
+        return self.user_repository.find(user_id)",5
+"Explain the concept of dependency injection","Dependency injection is when you pass objects to a class instead of creating them inside. It's useful for testing.",3 
