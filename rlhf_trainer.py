@@ -167,15 +167,49 @@ class RLHFTrainer:
                     logger.error(f"CSV file missing required column: {col}")
                     return None
             
-            # Convert to HuggingFace dataset
+            # For RewardTrainer, we need to create preference pairs with 'chosen' and 'rejected' columns
+            # Since we only have single outputs with ratings, we'll create synthetic pairs
+            # by using high-rated outputs as 'chosen' and creating alternative outputs as 'rejected'
+            
+            # Sort by prompt and rating to group similar prompts
+            df = df.sort_values(by=['prompt', 'rating'], ascending=[True, False])
+            
+            chosen_list = []
+            rejected_list = []
+            
+            # Group by prompt to create preference pairs
+            for prompt, group in df.groupby('prompt'):
+                if len(group) >= 2:
+                    # If we have multiple responses for the same prompt, use the highest rated as chosen
+                    # and the lowest rated as rejected
+                    chosen = group.iloc[0]['output']  # Highest rated (due to sorting)
+                    rejected = group.iloc[-1]['output']  # Lowest rated
+                    chosen_list.append(chosen)
+                    rejected_list.append(rejected)
+                else:
+                    # If we only have one response, create a synthetic rejected response
+                    # by slightly modifying the original response
+                    chosen = group.iloc[0]['output']
+                    
+                    # Create a synthetic rejected response by truncating or modifying the chosen one
+                    if len(chosen) > 50:
+                        # Truncate to create a less complete answer
+                        rejected = chosen[:len(chosen)//2] + "..."
+                    else:
+                        # For short responses, add a disclaimer that makes it less helpful
+                        rejected = "I'm not sure, but maybe: " + chosen
+                    
+                    chosen_list.append(chosen)
+                    rejected_list.append(rejected)
+            
+            # Convert to HuggingFace dataset with the required 'chosen' and 'rejected' columns
             dataset_dict = {
-                "prompt": df["prompt"].tolist(),
-                "completion": df["output"].tolist(),
-                "rating": df["rating"].tolist()
+                "chosen": chosen_list,
+                "rejected": rejected_list
             }
             
             dataset = Dataset.from_dict(dataset_dict)
-            logger.info(f"Prepared dataset from CSV with {len(dataset)} examples")
+            logger.info(f"Prepared preference dataset with {len(dataset)} examples for reward modeling")
             
             return dataset
         
