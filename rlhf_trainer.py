@@ -277,7 +277,7 @@ class RLHFTrainer:
                 optim="paged_adamw_32bit",
                 lr_scheduler_type="cosine",
                 warmup_ratio=0.1,
-                max_seq_length=512,  # Add maximum sequence length
+                max_length=512,  # Changed from max_seq_length to max_length
             )
             
             # Preprocess the dataset to ensure consistent lengths
