@@ -1,0 +1,7 @@
+prompt,output,rating
+"What is Python?","Python is a programming language.",5
+"What is Python?","Python is a snake.",2
+"How to print in Python?","Use print() function.",5
+"How to print in Python?","I don't know.",1
+"What is a variable?","A variable stores data.",4
+"What is a variable?","Not sure about that.",2 
