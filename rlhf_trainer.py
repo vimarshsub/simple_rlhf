@@ -428,7 +428,6 @@ class RLHFTrainer:
                 batch_size=8,
                 mini_batch_size=1,
                 gradient_accumulation_steps=4,
-                optimize_cuda_cache=True,
                 early_stopping=True,
                 target_kl=0.1,
                 ppo_epochs=4,
