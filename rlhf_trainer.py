@@ -427,7 +427,7 @@ class RLHFTrainer:
                 learning_rate=1.5e-5,
                 batch_size=4,
                 mini_batch_size=1,
-                ppo_epochs=2,
+                num_ppo_epochs=2,
                 seed=42,
             )
             
