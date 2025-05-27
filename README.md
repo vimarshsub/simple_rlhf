@@ -47,3 +47,4 @@ See `deployment_instructions.md` for detailed deployment steps.
 ## License
 
 This project is provided for educational purposes.
+# Updated for Koyeb deployment fix
