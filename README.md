@@ -48,3 +48,4 @@ See `deployment_instructions.md` for detailed deployment steps.
 
 This project is provided for educational purposes.
 # Updated for Koyeb deployment fix
+# Comprehensive debugging for 'chosen' error fix
