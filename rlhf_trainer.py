@@ -422,21 +422,13 @@ class RLHFTrainer:
                 rewards = outputs.logits[:, -1].cpu().tolist()
                 return rewards
             
-            # Configure PPO training
-            ppo_config = PPOConfig(
-                learning_rate=1.5e-5,
-                batch_size=4,
-                mini_batch_size=1,
-                num_ppo_epochs=2,
-                seed=42,
-            )
             
             # Initialize PPO trainer
             ppo_trainer = PPOTrainer(
-                config=ppo_config,
+                learning_rate=1.5e-5,
                 model=model,
                 tokenizer=tokenizer,
-                reward_function=reward_function
+                batch_size=4, mini_batch_size=1, num_ppo_epochs=2, seed=42
             )
             
             # Extract prompts
