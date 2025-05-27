@@ -317,9 +317,9 @@ class RLHFTrainer:
             # Configure reward training
             training_args = RewardConfig(
                 output_dir=output_dir,
-                num_train_epochs=3,
+                num_train_epochs=1,
                 per_device_train_batch_size=1,  # Reduced to 1 to avoid padding issues
-                gradient_accumulation_steps=8,  # Increased to maintain effective batch size
+                gradient_accumulation_steps=2,  # Increased to maintain effective batch size
                 gradient_checkpointing=True,
                 learning_rate=1e-5,
                 report_to="none",
@@ -327,7 +327,7 @@ class RLHFTrainer:
                 optim="adamw_torch",  # Changed from paged_adamw_32bit to standard adamw
                 lr_scheduler_type="cosine",
                 warmup_ratio=0.1,
-                max_length=256,  # Reduced max length for stability
+                max_length=128,  # Reduced max length for stability
             )
             
             # Initialize reward trainer without custom preprocessing
