@@ -101,6 +101,13 @@ class RLHFTrainer:
                     bnb_4bit_use_double_quant=True,
                     bnb_4bit_compute_dtype=torch.bfloat16
                 )
+            
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
+            )
             else:
                 bnb_config = None
             
@@ -116,6 +123,13 @@ class RLHFTrainer:
                     quantization_config=bnb_config,
                     trust_remote_code=True
                 )
+            
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
+            )
             else:
                 # For text generation, use causal LM
                 model = AutoModelForCausalLM.from_pretrained(
@@ -125,6 +139,13 @@ class RLHFTrainer:
                     quantization_config=bnb_config,
                     trust_remote_code=True
                 )
+            
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
+            )
             
             logger.info(f"Model and tokenizer loaded successfully: {MODEL_NAME}")
             return model, tokenizer
@@ -305,6 +326,13 @@ class RLHFTrainer:
                 target_modules=["c_attn", "c_proj"]  # Changed for Mistral architecture
             )
             
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
+            )
+            
             # Prepare model for training
             model = prepare_model_for_kbit_training(model)
             model = get_peft_model(model, peft_config)
@@ -330,12 +358,26 @@ class RLHFTrainer:
                 max_length=128,  # Reduced max length for stability
             )
             
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
+            )
+            
             # Initialize reward trainer without custom preprocessing
             trainer = RewardTrainer(
-                model=model,
+                mini_batch_size=1,
                 args=training_args,
                 train_dataset=dataset,
                 processing_class=tokenizer,  # Changed from tokenizer to processing_class
+            )
+            
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
             )
             
             # Train the model
@@ -392,6 +434,13 @@ class RLHFTrainer:
                 token=hf_token
             )
             
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
+            )
+            
             # Configure LoRA for parameter-efficient fine-tuning
             peft_config = LoraConfig(
                 r=16,
@@ -400,6 +449,13 @@ class RLHFTrainer:
                 bias="none",
                 task_type="CAUSAL_LM",
                 target_modules=["c_attn", "c_proj"]  # Changed for Mistral architecture
+            )
+            
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
             )
             
             # Prepare model for training
@@ -414,6 +470,13 @@ class RLHFTrainer:
                 token=hf_token
             )
             
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
+            )
+            
             # Create reward function
             def reward_function(samples):
                 inputs = tokenizer(samples, return_tensors="pt", padding=True).to(reward_model.device)
@@ -424,11 +487,20 @@ class RLHFTrainer:
             
             
             # Initialize PPO trainer
-            ppo_trainer = PPOTrainer(
+            ppo_config = PPOConfig(
                 learning_rate=1.5e-5,
+                mini_batch_size=1,
+                num_ppo_epochs=2,
+                batch_size=4,
+                seed=42,
+                model_name=self.model_name
+            )
+            
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
                 model=model,
                 tokenizer=tokenizer,
-                batch_size=4, mini_batch_size=1, num_ppo_epochs=2, seed=42
+                train_dataset=dataset
             )
             
             # Extract prompts
@@ -504,6 +576,13 @@ class RLHFTrainer:
                     device_map="auto",
                     token=hf_token
                 )
+            
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
+            )
             except Exception as model_error:
                 # If loading fails, log the error and re-raise
                 logger.error(f"Failed to load model from {model_path}: {str(model_error)}")
@@ -520,6 +599,13 @@ class RLHFTrainer:
                     top_p=0.9,
                     do_sample=(temperature > 0)
                 )
+            
+            ppo_trainer = PPOTrainer(
+                config=ppo_config,
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=dataset
+            )
             
             # Decode and clean up output
             generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
