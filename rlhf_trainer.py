@@ -425,15 +425,10 @@ class RLHFTrainer:
             # Configure PPO training
             ppo_config = PPOConfig(
                 learning_rate=1.5e-5,
-                batch_size=8,
+                batch_size=4,
                 mini_batch_size=1,
-                gradient_accumulation_steps=4,
-                target_kl=0.1,
-                ppo_epochs=4,
+                ppo_epochs=2,
                 seed=42,
-                init_kl_coef=0.2,
-                adap_kl_ctrl=True,
-                model_name=output_dir
             )
             
             # Initialize PPO trainer
