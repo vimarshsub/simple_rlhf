@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Default model configuration
-MODEL_NAME = "mistralai/Mistral-7B-v0.1"  # Changed back from gpt2 to Mistral
+MODEL_NAME = "distilgpt2"  # Changed back from gpt2 to Mistral
 REWARD_MODEL_NAME = "reward_model"  # Name for saved reward model
 RLHF_MODEL_NAME = "rlhf_model"  # Name for saved RLHF model
 
@@ -302,7 +302,7 @@ class RLHFTrainer:
                 lora_dropout=0.05,
                 bias="none",
                 task_type="SEQ_CLS",  # Sequence classification for reward model
-                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"]  # Changed for Mistral architecture
+                target_modules=["c_attn", "c_proj"]  # Changed for Mistral architecture
             )
             
             # Prepare model for training
@@ -399,7 +399,7 @@ class RLHFTrainer:
                 lora_dropout=0.05,
                 bias="none",
                 task_type="CAUSAL_LM",
-                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"]  # Changed for Mistral architecture
+                target_modules=["c_attn", "c_proj"]  # Changed for Mistral architecture
             )
             
             # Prepare model for training
