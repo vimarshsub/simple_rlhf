@@ -3,6 +3,15 @@ Gradio interface for simple RLHF system
 Provides a web interface for generating content, uploading feedback, and training
 """
 
+print("\n\n")
+print("*" * 80)
+print("*" * 80)
+print("*** STARTING GRADIO APP - LATEST CODE VERSION WITH DEBUG PRINTS ***")
+print("*** DEPLOYMENT TIMESTAMP:", __import__('datetime').datetime.now(), "***")
+print("*" * 80)
+print("*" * 80)
+print("\n\n")
+
 import sys
 import os
 import importlib.metadata
@@ -12,7 +21,12 @@ try:
     trl_version = importlib.metadata.version('trl')
     transformers_version = importlib.metadata.version('transformers')
     
-    print(f"=== DETECTED VERSIONS: trl=={trl_version}, transformers=={transformers_version} ===")
+    print("\n\n")
+    print("!" * 80)
+    print(f"!!! DETECTED VERSIONS: trl=={trl_version}, transformers=={transformers_version} !!!")
+    print("!!! REQUIRED VERSIONS: trl==0.7.0, transformers==4.31.0 !!!")
+    print("!" * 80)
+    print("\n\n")
     
     if trl_version != "0.7.0" or transformers_version != "4.31.0":
         print(f"ERROR: Incompatible versions detected! Found trl=={trl_version}, transformers=={transformers_version}")
@@ -350,6 +364,18 @@ def create_interface():
     return interface
 
 if __name__ == "__main__":
+    # Print versions again right before launching
+    try:
+        trl_version = importlib.metadata.version('trl')
+        transformers_version = importlib.metadata.version('transformers')
+        print("\n\n")
+        print("#" * 80)
+        print(f"### FINAL VERSIONS BEFORE LAUNCH: trl=={trl_version}, transformers=={transformers_version} ###")
+        print("#" * 80)
+        print("\n\n")
+    except Exception as e:
+        print(f"Error checking final versions: {str(e)}")
+        
     # Create and launch the interface
     interface = create_interface()
     interface.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 8080)))
