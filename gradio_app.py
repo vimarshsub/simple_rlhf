@@ -3,7 +3,33 @@ Gradio interface for simple RLHF system
 Provides a web interface for generating content, uploading feedback, and training
 """
 
+import sys
 import os
+import importlib.metadata
+
+# Check versions before importing anything else
+try:
+    trl_version = importlib.metadata.version('trl')
+    transformers_version = importlib.metadata.version('transformers')
+    
+    print(f"=== DETECTED VERSIONS: trl=={trl_version}, transformers=={transformers_version} ===")
+    
+    if trl_version != "0.7.0" or transformers_version != "4.31.0":
+        print(f"ERROR: Incompatible versions detected! Found trl=={trl_version}, transformers=={transformers_version}")
+        print("Required: trl==0.7.0, transformers==4.31.0")
+        print("Installing correct versions...")
+        
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", 
+                              "trl==0.7.0", "transformers==4.31.0", 
+                              "--force-reinstall", "--no-cache-dir"])
+        
+        print("Correct versions installed. Restarting application...")
+        # This will restart the script with the correct versions
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+except Exception as e:
+    print(f"Error checking/fixing versions: {str(e)}")
+
 import gradio as gr
 import pandas as pd
 import torch
