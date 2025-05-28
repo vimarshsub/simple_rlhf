@@ -14,7 +14,7 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments
 )
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model
 from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 from trl import RewardTrainer, RewardConfig
 from datasets import Dataset
@@ -305,8 +305,7 @@ class RLHFTrainer:
                 target_modules=["c_attn", "c_proj"]  # Changed for Mistral architecture
             )
             
-            # Prepare model for training
-            model = prepare_model_for_kbit_training(model)
+            # Apply LoRA directly without prepare_model_for_kbit_training
             model = get_peft_model(model, peft_config)
             
             # Ensure model is in training mode and gradients are enabled
@@ -402,8 +401,7 @@ class RLHFTrainer:
                 target_modules=["c_attn", "c_proj"]  # Changed for Mistral architecture
             )
             
-            # Prepare model for training
-            model = prepare_model_for_kbit_training(model)
+            # Apply LoRA directly without prepare_model_for_kbit_training
             model = get_peft_model(model, peft_config)
             
             # Load reward model
@@ -422,13 +420,28 @@ class RLHFTrainer:
                 rewards = outputs.logits[:, -1].cpu().tolist()
                 return rewards
             
+            # Configure PPO training
+            ppo_config = PPOConfig(
+                learning_rate=1.5e-5,
+                batch_size=8,
+                mini_batch_size=1,
+                gradient_accumulation_steps=4,
+                optimize_cuda_cache=True,
+                early_stopping=True,
+                target_kl=0.1,
+                ppo_epochs=4,
+                seed=42,
+                init_kl_coef=0.2,
+                adap_kl_ctrl=True,
+                model_name=output_dir
+            )
             
             # Initialize PPO trainer
             ppo_trainer = PPOTrainer(
-                learning_rate=1.5e-5,
+                config=ppo_config,
                 model=model,
                 tokenizer=tokenizer,
-                batch_size=4, mini_batch_size=1, num_ppo_epochs=2, seed=42
+                reward_function=reward_function
             )
             
             # Extract prompts
@@ -453,14 +466,11 @@ class RLHFTrainer:
                     ppo_trainer.step([prompt], [response_decoded], [reward])
                     
                     if (i + 1) % 10 == 0:
-                        logger.info(f"Processed {i+1}/{len(prompts)} prompts in epoch {epoch+1}")
-                
-                # Save checkpoint after each epoch
-                ppo_trainer.save_pretrained(f"{output_dir}/checkpoint-epoch-{epoch+1}")
+                        logger.info(f"Processed {i+1}/{len(prompts)} examples in epoch {epoch+1}")
             
-            # Save final model
+            # Save the trained model
             ppo_trainer.save_pretrained(output_dir)
-            logger.info(f"RLHF training completed and model saved to {output_dir}")
+            logger.info(f"RLHF model trained and saved to {output_dir}")
             
             return True
         
