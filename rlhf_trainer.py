@@ -3,11 +3,25 @@ TRL integration module for simple RLHF system
 Handles reinforcement learning from human feedback using TRL library
 """
 
+print("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+print("RUNNING LATEST CODE VERSION WITH FIXED IMPORTS")
+print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n")
+
 import os
 import torch
 import json
 import logging
 import pandas as pd
+import importlib.metadata
+
+# Print versions at import time for debugging
+try:
+    trl_version = importlib.metadata.version('trl')
+    transformers_version = importlib.metadata.version('transformers')
+    print(f"\n\n!!! DETECTED VERSIONS: trl=={trl_version}, transformers=={transformers_version} !!!\n\n")
+except Exception as e:
+    print(f"\n\n!!! ERROR DETECTING VERSIONS: {str(e)} !!!\n\n")
+
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -402,60 +416,76 @@ class RLHFTrainer:
                 model_name=output_dir
             )
             
-            # Initialize PPO trainer
-            ppo_trainer = PPOTrainer(
-                config=ppo_config,
-                model=model,
-                tokenizer=tokenizer,
-                reward_function=reward_function
-            )
+            # Print TRL version for debugging
+            trl_version = importlib.metadata.version('trl')
+            transformers_version = importlib.metadata.version('transformers')
+            print(f"\n\n!!! VERSIONS BEFORE PPO: trl=={trl_version}, transformers=={transformers_version} !!!\n\n")
             
-            # Extract prompts
-            prompts = dataset["prompt"]
-            
-            # Training loop
-            for epoch in range(3):  # 3 epochs
-                logger.info(f"Starting epoch {epoch+1}/3")
+            try:
+                # Initialize PPO trainer
+                ppo_trainer = PPOTrainer(
+                    config=ppo_config,
+                    model=model,
+                    tokenizer=tokenizer,
+                    reward_function=reward_function
+                )
                 
-                for i, prompt in enumerate(prompts):
-                    # Tokenize prompt
-                    encoded_prompt = tokenizer(prompt, return_tensors="pt").to(ppo_trainer.model.device)
-                    
-                    # Generate response
-                    response = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
-                    response_decoded = tokenizer.decode(response[0])
-                    
-                    # Compute reward
-                    reward = ppo_trainer.reward_function([response_decoded])[0]
-                    
-                    # Run PPO step
-                    ppo_trainer.step([prompt], [response_decoded], [reward])
-                    
-                    if (i + 1) % 10 == 0:
-                        logger.info(f"Processed {i+1}/{len(prompts)} prompts in epoch {epoch+1}")
+                # Extract prompts
+                prompts = dataset["prompt"]
                 
-                # Save checkpoint after each epoch
-                ppo_trainer.save_pretrained(f"{output_dir}/checkpoint-epoch-{epoch+1}")
+                # Training loop
+                for epoch in range(3):  # 3 epochs
+                    logger.info(f"Starting epoch {epoch+1}/3")
+                    
+                    for i, prompt in enumerate(prompts):
+                        # Tokenize prompt
+                        encoded_prompt = tokenizer(prompt, return_tensors="pt").to(ppo_trainer.model.device)
+                        
+                        # Generate response
+                        response = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
+                        response_decoded = tokenizer.decode(response[0])
+                        
+                        # Compute reward
+                        reward = ppo_trainer.reward_function([response_decoded])[0]
+                        
+                        # Run PPO step
+                        ppo_trainer.step([prompt], [response_decoded], [reward])
+                        
+                        if (i + 1) % 10 == 0:
+                            logger.info(f"Processed {i+1}/{len(prompts)} examples in epoch {epoch+1}")
+                
+                # Save the trained model
+                ppo_trainer.save_pretrained(output_dir)
+                logger.info(f"RLHF model trained and saved to {output_dir}")
+                
+                return True
             
-            # Save final model
-            ppo_trainer.save_pretrained(output_dir)
-            logger.info(f"RLHF training completed and model saved to {output_dir}")
+            except TypeError as e:
+                if "unexpected keyword argument 'learning_rate'" in str(e):
+                    print("\n\n!!! ERROR: PPOTrainer got unexpected keyword 'learning_rate' !!!")
+                    print("!!! This happens because you're using trl 0.17.0 instead of trl 0.7.0 !!!")
+                    print(f"!!! Current versions: trl=={trl_version}, transformers=={transformers_version} !!!")
+                    print("!!! Required versions: trl==0.7.0, transformers==4.31.0 !!!")
+                    print("!!! Please force install the correct versions using: !!!")
+                    print("!!! pip install trl==0.7.0 transformers==4.31.0 --force-reinstall --no-cache-dir !!!\n\n")
+                    logger.error(f"Error during RLHF training: {str(e)}")
+                    return False
+                else:
+                    raise
             
-            return True
-        
         except Exception as e:
-            logger.error(f"Error during RLHF training: {str(e)}")
+            logger.error(f"Error training with RLHF: {str(e)}")
             return False
     
     def generate_text(self, prompt, model_path=None, max_new_tokens=512, temperature=0.7):
         """
-        Generate text using a trained model.
+        Generate text using the model.
         
         Args:
             prompt (str): Input prompt
-            model_path (str, optional): Path to the model
+            model_path (str, optional): Path to the model to use
             max_new_tokens (int): Maximum number of tokens to generate
-            temperature (float): Sampling temperature
+            temperature (float): Temperature for sampling
             
         Returns:
             str: Generated text
@@ -464,46 +494,44 @@ class RLHFTrainer:
             # Get token from environment variable
             hf_token = os.environ.get("HUGGING_FACE_HUB_TOKEN")
             
+            # Set up tokenizer
+            tokenizer = self.setup_tokenizer()
+            
             # Determine which model to use
-            if model_path is None:
-                # Always use the base Hugging Face model if no specific model is provided
-                model_path = self.model_name
-            
-            logger.info(f"Generating text using model: {model_path}")
-            
-            # Load model and tokenizer
-            try:
-                # Try to load the model with authentication
-                tokenizer = AutoTokenizer.from_pretrained(model_path, token=hf_token)
-                tokenizer.pad_token = tokenizer.eos_token
-                
-                model = AutoModelForCausalLM.from_pretrained(
+            if model_path and os.path.exists(model_path):
+                # Use RLHF model
+                model = AutoModelForCausalLMWithValueHead.from_pretrained(
                     model_path,
                     torch_dtype=torch.float16,
                     device_map="auto",
                     token=hf_token
                 )
-            except Exception as model_error:
-                # If loading fails, log the error and re-raise
-                logger.error(f"Failed to load model from {model_path}: {str(model_error)}")
-                raise
+            else:
+                # Use base model
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    token=hf_token
+                )
             
-            # Generate text
+            # Tokenize prompt
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
             
+            # Generate text
             with torch.no_grad():
                 outputs = model.generate(
                     inputs.input_ids,
                     max_new_tokens=max_new_tokens,
                     temperature=temperature,
-                    top_p=0.9,
-                    do_sample=(temperature > 0)
+                    do_sample=True,
+                    pad_token_id=tokenizer.eos_token_id
                 )
             
-            # Decode and clean up output
+            # Decode and return generated text
             generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
             
-            # Remove prompt from output if it's included
+            # Remove the prompt from the beginning if it's included
             if generated_text.startswith(prompt):
                 generated_text = generated_text[len(prompt):].strip()
             
@@ -550,7 +578,6 @@ class RLHFTrainer:
         
         logger.info("Full RLHF training pipeline completed successfully")
         return True
-
 # Example usage
 if __name__ == "__main__":
     # Initialize trainer
@@ -564,5 +591,3 @@ if __name__ == "__main__":
     
     # Generate text with trained model
     prompt = "Write a troubleshooting runbook for when a web server returns 503 errors"
-    output = trainer.generate_text(prompt)
-    print(f"Generated text: {output}")
