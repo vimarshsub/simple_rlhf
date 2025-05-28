@@ -217,7 +217,34 @@ class RLHFTrainer:
             dataset = Dataset.from_dict(dataset_dict)
             logger.info(f"Prepared preference dataset with {len(dataset)} examples for reward modeling")
             
-            return dataset
+            # Tokenize the dataset for RewardTrainer in trl 0.7.0
+            tokenizer = self.setup_tokenizer()
+            
+            def tokenize_dataset(examples):
+                chosen_texts = examples["chosen"]
+                rejected_texts = examples["rejected"]
+                
+                tokenized_chosen = tokenizer(chosen_texts, truncation=True, padding="max_length", max_length=512)
+                tokenized_rejected = tokenizer(rejected_texts, truncation=True, padding="max_length", max_length=512)
+                
+                # Create the required format for RewardTrainer
+                result = {
+                    "input_ids_chosen": tokenized_chosen["input_ids"],
+                    "attention_mask_chosen": tokenized_chosen["attention_mask"],
+                    "input_ids_rejected": tokenized_rejected["input_ids"],
+                    "attention_mask_rejected": tokenized_rejected["attention_mask"],
+                }
+                return result
+            
+            # Apply tokenization to create the required columns
+            tokenized_dataset = dataset.map(
+                tokenize_dataset,
+                batched=True,
+                desc="Tokenizing dataset for reward modeling"
+            )
+            
+            logger.info(f"Successfully tokenized dataset with required columns for RewardTrainer")
+            return tokenized_dataset
             
         except Exception as e:
             logger.error(f"Error transforming to preference pairs: {str(e)}")
@@ -266,7 +293,35 @@ class RLHFTrainer:
             
             # Convert to HuggingFace dataset
             dataset = Dataset.from_list(preference_data)
-            return dataset
+            
+            # Tokenize the dataset for RewardTrainer in trl 0.7.0
+            tokenizer = self.setup_tokenizer()
+            
+            def tokenize_dataset(examples):
+                chosen_texts = examples["chosen"]
+                rejected_texts = examples["rejected"]
+                
+                tokenized_chosen = tokenizer(chosen_texts, truncation=True, padding="max_length", max_length=512)
+                tokenized_rejected = tokenizer(rejected_texts, truncation=True, padding="max_length", max_length=512)
+                
+                # Create the required format for RewardTrainer
+                result = {
+                    "input_ids_chosen": tokenized_chosen["input_ids"],
+                    "attention_mask_chosen": tokenized_chosen["attention_mask"],
+                    "input_ids_rejected": tokenized_rejected["input_ids"],
+                    "attention_mask_rejected": tokenized_rejected["attention_mask"],
+                }
+                return result
+            
+            # Apply tokenization to create the required columns
+            tokenized_dataset = dataset.map(
+                tokenize_dataset,
+                batched=True,
+                desc="Tokenizing dataset for reward modeling"
+            )
+            
+            logger.info(f"Successfully tokenized dataset with required columns for RewardTrainer")
+            return tokenized_dataset
             
         except Exception as e:
             logger.error(f"Error preparing dataset: {str(e)}")
@@ -328,7 +383,7 @@ class RLHFTrainer:
                 warmup_ratio=0.1,
             )
             
-            # Initialize reward trainer without custom preprocessing
+            # Initialize reward trainer - dataset should already have the required columns
             trainer = RewardTrainer(
                 model=model,
                 args=training_args,
