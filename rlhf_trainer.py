@@ -399,6 +399,11 @@ class RLHFTrainer:
             # Save the model using trainer's save_model method
             trainer.save_model()
             
+            # DEBUG: List files in output directory after trainer.save_model()
+            logger.info(f"Files in {output_dir} after trainer.save_model():")
+            for file in os.listdir(output_dir):
+                logger.info(f"  - {file}")
+            
             # Create a temporary directory for saving the base model
             temp_base_model_dir = os.path.join(output_dir, "base_model_temp")
             os.makedirs(temp_base_model_dir, exist_ok=True)
@@ -406,6 +411,11 @@ class RLHFTrainer:
             # Save the base model to the temporary directory
             base_model.save_pretrained(temp_base_model_dir)
             tokenizer.save_pretrained(temp_base_model_dir)
+            
+            # DEBUG: List files in temp directory after base_model.save_pretrained()
+            logger.info(f"Files in {temp_base_model_dir} after base_model.save_pretrained():")
+            for file in os.listdir(temp_base_model_dir):
+                logger.info(f"  - {file}")
             
             # Copy the config.json from the base model to the output directory
             base_config_path = os.path.join(temp_base_model_dir, "config.json")
@@ -419,25 +429,81 @@ class RLHFTrainer:
             # Also explicitly save the PEFT model
             model.save_pretrained(output_dir)
             
+            # DEBUG: List files in output directory after model.save_pretrained()
+            logger.info(f"Files in {output_dir} after model.save_pretrained():")
+            for file in os.listdir(output_dir):
+                logger.info(f"  - {file}")
+            
             # Verify that config.json exists in the output directory
             if os.path.exists(output_config_path):
                 logger.info(f"Verified config.json exists at {output_config_path}")
             else:
-                logger.warning(f"config.json not found at {output_config_path}, RLHF training may fail")
+                logger.warning(f"config.json not found at {output_config_path}, creating it manually")
                 
-                # As a fallback, create a minimal config.json if it doesn't exist
-                if not os.path.exists(output_config_path):
-                    minimal_config = {
-                        "architectures": ["GPT2ForSequenceClassification"],
-                        "model_type": "gpt2",
-                        "num_labels": 1
-                    }
-                    with open(output_config_path, 'w') as f:
-                        json.dump(minimal_config, f)
-                    logger.info(f"Created minimal config.json at {output_config_path}")
+                # Create a minimal config.json directly
+                minimal_config = {
+                    "architectures": ["GPT2ForSequenceClassification"],
+                    "model_type": "gpt2",
+                    "num_labels": 1,
+                    "vocab_size": 50257,
+                    "n_positions": 1024,
+                    "n_ctx": 1024,
+                    "n_embd": 768,
+                    "n_layer": 6,
+                    "n_head": 12,
+                    "activation_function": "gelu_new",
+                    "resid_pdrop": 0.1,
+                    "embd_pdrop": 0.1,
+                    "attn_pdrop": 0.1,
+                    "layer_norm_epsilon": 1e-05,
+                    "initializer_range": 0.02,
+                    "summary_type": "cls_index",
+                    "summary_use_proj": True,
+                    "summary_activation": None,
+                    "summary_proj_to_labels": True,
+                    "summary_first_dropout": 0.1,
+                    "scale_attn_weights": True,
+                    "use_cache": True,
+                    "bos_token_id": 50256,
+                    "eos_token_id": 50256
+                }
+                
+                with open(output_config_path, 'w') as f:
+                    json.dump(minimal_config, f)
+                logger.info(f"Created minimal config.json at {output_config_path}")
+                
+                # Verify the file was created
+                if os.path.exists(output_config_path):
+                    with open(output_config_path, 'r') as f:
+                        config_content = f.read()
+                    logger.info(f"Verified config.json was created with size: {len(config_content)} bytes")
+                else:
+                    logger.error(f"Failed to create config.json at {output_config_path}")
             
             # Clean up temporary directory
             shutil.rmtree(temp_base_model_dir, ignore_errors=True)
+            
+            # Final verification
+            logger.info(f"Final verification of files in {output_dir}:")
+            for file in os.listdir(output_dir):
+                file_path = os.path.join(output_dir, file)
+                file_size = os.path.getsize(file_path)
+                logger.info(f"  - {file} ({file_size} bytes)")
+            
+            # Explicitly check for config.json one more time
+            if os.path.exists(output_config_path):
+                with open(output_config_path, 'r') as f:
+                    config_content = f.read()
+                logger.info(f"Final verification: config.json exists with size: {len(config_content)} bytes")
+            else:
+                logger.error(f"Final verification: config.json is still missing at {output_config_path}")
+                # Last resort: create it again with file permissions check
+                try:
+                    with open(output_config_path, 'w') as f:
+                        json.dump(minimal_config, f)
+                    logger.info(f"Last resort: Created config.json at {output_config_path}")
+                except Exception as e:
+                    logger.error(f"Failed to create config.json in last resort attempt: {str(e)}")
             
             logger.info(f"Reward model saved to {output_dir}")
             
@@ -502,17 +568,77 @@ class RLHFTrainer:
             
             # Check if config.json exists in reward_model_path
             config_path = os.path.join(reward_model_path, "config.json")
+            logger.info(f"Checking for config.json at {config_path}")
+            
+            # List all files in reward_model_path
+            logger.info(f"Files in reward model directory ({reward_model_path}):")
+            for file in os.listdir(reward_model_path):
+                file_path = os.path.join(reward_model_path, file)
+                file_size = os.path.getsize(file_path)
+                logger.info(f"  - {file} ({file_size} bytes)")
+            
             if not os.path.exists(config_path):
                 logger.error(f"config.json not found at {config_path}")
-                raise FileNotFoundError(f"Required file config.json not found in {reward_model_path}")
+                
+                # Create a minimal config.json as a last resort
+                minimal_config = {
+                    "architectures": ["GPT2ForSequenceClassification"],
+                    "model_type": "gpt2",
+                    "num_labels": 1,
+                    "vocab_size": 50257,
+                    "n_positions": 1024,
+                    "n_ctx": 1024,
+                    "n_embd": 768,
+                    "n_layer": 6,
+                    "n_head": 12,
+                    "activation_function": "gelu_new",
+                    "resid_pdrop": 0.1,
+                    "embd_pdrop": 0.1,
+                    "attn_pdrop": 0.1,
+                    "layer_norm_epsilon": 1e-05,
+                    "initializer_range": 0.02,
+                    "summary_type": "cls_index",
+                    "summary_use_proj": True,
+                    "summary_activation": None,
+                    "summary_proj_to_labels": True,
+                    "summary_first_dropout": 0.1,
+                    "scale_attn_weights": True,
+                    "use_cache": True,
+                    "bos_token_id": 50256,
+                    "eos_token_id": 50256
+                }
+                
+                with open(config_path, 'w') as f:
+                    json.dump(minimal_config, f)
+                logger.info(f"Created minimal config.json at {config_path}")
+                
+                # Verify the file was created
+                if os.path.exists(config_path):
+                    with open(config_path, 'r') as f:
+                        config_content = f.read()
+                    logger.info(f"Verified config.json was created with size: {len(config_content)} bytes")
+                else:
+                    logger.error(f"Failed to create config.json at {config_path}")
+                    raise FileNotFoundError(f"Required file config.json not found in {reward_model_path}")
+            else:
+                logger.info(f"config.json found at {config_path}")
+                # Verify the file is not empty
+                with open(config_path, 'r') as f:
+                    config_content = f.read()
+                logger.info(f"config.json size: {len(config_content)} bytes")
+                if len(config_content.strip()) == 0:
+                    logger.error(f"config.json is empty at {config_path}")
+                    raise ValueError(f"config.json is empty in {reward_model_path}")
             
             # Load reward model - use AutoModelForSequenceClassification for reward model
+            logger.info(f"Loading reward model from {reward_model_path}")
             reward_model = AutoModelForSequenceClassification.from_pretrained(
                 reward_model_path,
                 torch_dtype=torch.float16,
                 device_map="auto",
                 token=hf_token
             )
+            logger.info(f"Successfully loaded reward model")
             
             # Create reward function
             def reward_function(samples):
