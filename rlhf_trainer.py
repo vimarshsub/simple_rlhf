@@ -395,9 +395,22 @@ class RLHFTrainer:
             logger.info("Starting reward model training...")
             trainer.train()
             
-            # Save the model
+            # Save the model using trainer's save_model method
             trainer.save_model()
+            
+            # Also explicitly save the model and tokenizer to ensure all files are present
+            # This ensures config.json and other necessary files are saved
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
+            
             logger.info(f"Reward model saved to {output_dir}")
+            
+            # Verify that config.json exists in the output directory
+            config_path = os.path.join(output_dir, "config.json")
+            if os.path.exists(config_path):
+                logger.info(f"Verified config.json exists at {config_path}")
+            else:
+                logger.warning(f"config.json not found at {config_path}, RLHF training may fail")
             
             # Reset flag
             self._reward_training = False
@@ -458,8 +471,15 @@ class RLHFTrainer:
             # Apply LoRA directly without prepare_model_for_kbit_training
             model = get_peft_model(model, peft_config)
             
-            # Load reward model
-            reward_model = AutoModelForCausalLM.from_pretrained(
+            # Check if config.json exists in reward_model_path
+            config_path = os.path.join(reward_model_path, "config.json")
+            if not os.path.exists(config_path):
+                logger.error(f"config.json not found at {config_path}")
+                raise FileNotFoundError(f"Required file config.json not found in {reward_model_path}")
+            
+            # Load reward model - use AutoModelForSequenceClassification for reward model
+            from transformers import AutoModelForSequenceClassification
+            reward_model = AutoModelForSequenceClassification.from_pretrained(
                 reward_model_path,
                 torch_dtype=torch.float16,
                 device_map="auto",
