@@ -16,7 +16,7 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model
 from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
-from trl import RewardTrainer, RewardConfig
+from trl import RewardTrainer
 from datasets import Dataset
 
 from feedback_db import FeedbackDatabase
@@ -313,8 +313,8 @@ class RLHFTrainer:
             for param in model.parameters():
                 param.requires_grad = True
             
-            # Configure reward training
-            training_args = RewardConfig(
+            # Configure reward training using TrainingArguments instead of RewardConfig
+            training_args = TrainingArguments(
                 output_dir=output_dir,
                 num_train_epochs=1,
                 per_device_train_batch_size=1,  # Reduced to 1 to avoid padding issues
@@ -326,7 +326,6 @@ class RLHFTrainer:
                 optim="adamw_torch",  # Changed from paged_adamw_32bit to standard adamw
                 lr_scheduler_type="cosine",
                 warmup_ratio=0.1,
-                max_length=128,  # Reduced max length for stability
             )
             
             # Initialize reward trainer without custom preprocessing
@@ -334,7 +333,7 @@ class RLHFTrainer:
                 model=model,
                 args=training_args,
                 train_dataset=dataset,
-                processing_class=tokenizer,  # Changed from tokenizer to processing_class
+                tokenizer=tokenizer,  # Use tokenizer directly in trl 0.7.0
             )
             
             # Train the model
