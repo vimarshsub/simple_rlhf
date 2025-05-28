@@ -12,12 +12,14 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments
+    TrainingArguments,
+    AutoModelForSequenceClassification
 )
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, PeftModel
 from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 from trl import RewardTrainer
 from datasets import Dataset
+import shutil
 
 from feedback_db import FeedbackDatabase
 
@@ -107,7 +109,6 @@ class RLHFTrainer:
             # Load model - use AutoModelForCausalLM for generation, AutoModelForSequenceClassification for reward
             if hasattr(self, '_reward_training') and self._reward_training:
                 # For reward model training, use sequence classification
-                from transformers import AutoModelForSequenceClassification
                 model = AutoModelForSequenceClassification.from_pretrained(
                     MODEL_NAME,
                     num_labels=1,
@@ -348,7 +349,7 @@ class RLHFTrainer:
             self._reward_training = True
             
             # Set up model and tokenizer
-            model, tokenizer = self.setup_model(quantize=False)  # Disable quantization for compatibility
+            base_model, tokenizer = self.setup_model(quantize=False)  # Disable quantization for compatibility
             
             # Apply LoRA for parameter-efficient fine-tuning
             peft_config = LoraConfig(
@@ -361,7 +362,7 @@ class RLHFTrainer:
             )
             
             # Apply LoRA directly without prepare_model_for_kbit_training
-            model = get_peft_model(model, peft_config)
+            model = get_peft_model(base_model, peft_config)
             
             # Ensure model is in training mode and gradients are enabled
             model.train()
@@ -398,19 +399,47 @@ class RLHFTrainer:
             # Save the model using trainer's save_model method
             trainer.save_model()
             
-            # Also explicitly save the model and tokenizer to ensure all files are present
-            # This ensures config.json and other necessary files are saved
-            model.save_pretrained(output_dir)
-            tokenizer.save_pretrained(output_dir)
+            # Create a temporary directory for saving the base model
+            temp_base_model_dir = os.path.join(output_dir, "base_model_temp")
+            os.makedirs(temp_base_model_dir, exist_ok=True)
             
-            logger.info(f"Reward model saved to {output_dir}")
+            # Save the base model to the temporary directory
+            base_model.save_pretrained(temp_base_model_dir)
+            tokenizer.save_pretrained(temp_base_model_dir)
+            
+            # Copy the config.json from the base model to the output directory
+            base_config_path = os.path.join(temp_base_model_dir, "config.json")
+            output_config_path = os.path.join(output_dir, "config.json")
+            if os.path.exists(base_config_path):
+                shutil.copy(base_config_path, output_config_path)
+                logger.info(f"Copied config.json from base model to {output_config_path}")
+            else:
+                logger.warning(f"config.json not found in base model at {base_config_path}")
+            
+            # Also explicitly save the PEFT model
+            model.save_pretrained(output_dir)
             
             # Verify that config.json exists in the output directory
-            config_path = os.path.join(output_dir, "config.json")
-            if os.path.exists(config_path):
-                logger.info(f"Verified config.json exists at {config_path}")
+            if os.path.exists(output_config_path):
+                logger.info(f"Verified config.json exists at {output_config_path}")
             else:
-                logger.warning(f"config.json not found at {config_path}, RLHF training may fail")
+                logger.warning(f"config.json not found at {output_config_path}, RLHF training may fail")
+                
+                # As a fallback, create a minimal config.json if it doesn't exist
+                if not os.path.exists(output_config_path):
+                    minimal_config = {
+                        "architectures": ["GPT2ForSequenceClassification"],
+                        "model_type": "gpt2",
+                        "num_labels": 1
+                    }
+                    with open(output_config_path, 'w') as f:
+                        json.dump(minimal_config, f)
+                    logger.info(f"Created minimal config.json at {output_config_path}")
+            
+            # Clean up temporary directory
+            shutil.rmtree(temp_base_model_dir, ignore_errors=True)
+            
+            logger.info(f"Reward model saved to {output_dir}")
             
             # Reset flag
             self._reward_training = False
@@ -478,7 +507,6 @@ class RLHFTrainer:
                 raise FileNotFoundError(f"Required file config.json not found in {reward_model_path}")
             
             # Load reward model - use AutoModelForSequenceClassification for reward model
-            from transformers import AutoModelForSequenceClassification
             reward_model = AutoModelForSequenceClassification.from_pretrained(
                 reward_model_path,
                 torch_dtype=torch.float16,
