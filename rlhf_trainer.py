@@ -558,7 +558,7 @@ class RLHFTrainer:
             # Set up tokenizer
             tokenizer = self.setup_tokenizer()
             
-            # CRITICAL FIX: First load the base model WITHOUT any PEFT/LoRA
+            # CRITICAL FIX: Load the base model WITHOUT any PEFT/LoRA
             logger.info("Loading base model for RLHF training...")
             base_model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
@@ -566,34 +566,20 @@ class RLHFTrainer:
                 device_map="auto"
             )
             
-            # CRITICAL FIX: Then wrap with value head BEFORE applying LoRA
+            # CRITICAL FIX: Then wrap with value head WITHOUT applying LoRA
             logger.info("Wrapping base model with value head...")
             # Create a new instance directly from the base model
-            model_with_value_head = AutoModelForCausalLMWithValueHead.from_pretrained(
+            model = AutoModelForCausalLMWithValueHead.from_pretrained(
                 base_model,  # Use the base model instance
                 torch_dtype=torch.float16,
                 device_map="auto"
             )
             
             # Verify the model is correctly wrapped
-            logger.info(f"Verified model type after wrapping: {type(model_with_value_head)}")
+            logger.info(f"Verified model type after wrapping: {type(model)}")
             
-            # CRITICAL FIX: Only AFTER wrapping, apply LoRA
-            logger.info("Applying LoRA to the wrapped model...")
-            peft_config = LoraConfig(
-                r=16,
-                lora_alpha=32,
-                lora_dropout=0.05,
-                bias="none",
-                task_type="CAUSAL_LM",
-                target_modules=["c_attn", "c_proj"]
-            )
-            
-            # Apply LoRA to the wrapped model
-            model = get_peft_model(model_with_value_head, peft_config)
-            
-            # Verify the final model type
-            logger.info(f"Final model type for PPOTrainer: {type(model)}")
+            # CRITICAL FIX: Do NOT apply LoRA to the wrapped model
+            # This is the key change - we're removing PEFT/LoRA entirely from RLHF training
             
             # Check if config.json exists in reward_model_path
             config_path = os.path.join(reward_model_path, "config.json")
@@ -717,7 +703,7 @@ class RLHFTrainer:
             )
             
             # Initialize PPO trainer - in trl 0.7.0, reward_function is not passed to constructor
-            logger.info("Initializing PPOTrainer with the wrapped and LoRA-applied model...")
+            logger.info("Initializing PPOTrainer with the wrapped model (no PEFT/LoRA)...")
             ppo_trainer = PPOTrainer(
                 config=ppo_config,
                 model=model,
