@@ -575,6 +575,11 @@ class RLHFTrainer:
                 device_map="auto"
             )
             
+            # CRITICAL FIX: Explicitly set device attribute on the model
+            # This is required by PPOTrainer but not provided by AutoModelForCausalLMWithValueHead
+            model.device = next(model.parameters()).device
+            logger.info(f"Explicitly set model.device = {model.device}")
+            
             # Verify the model is correctly wrapped
             logger.info(f"Verified model type after wrapping: {type(model)}")
             
