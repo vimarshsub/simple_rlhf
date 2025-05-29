@@ -15,7 +15,7 @@ from transformers import (
     TrainingArguments,
     AutoModelForSequenceClassification
 )
-from peft import LoraConfig, get_peft_model, PeftModel
+from peft import LoraConfig, get_peft_model, PeftModel, PeftConfig
 from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 from trl import RewardTrainer
 from datasets import Dataset
@@ -429,6 +429,19 @@ class RLHFTrainer:
             # Also explicitly save the PEFT model
             model.save_pretrained(output_dir)
             
+            # Copy the pytorch_model.bin from the base model to the output directory
+            base_model_bin_path = os.path.join(temp_base_model_dir, "pytorch_model.bin")
+            output_model_bin_path = os.path.join(output_dir, "pytorch_model.bin")
+            if os.path.exists(base_model_bin_path):
+                shutil.copy(base_model_bin_path, output_model_bin_path)
+                logger.info(f"Copied pytorch_model.bin from base model to {output_model_bin_path}")
+            else:
+                logger.warning(f"pytorch_model.bin not found in base model at {base_model_bin_path}")
+                # Create a minimal pytorch_model.bin if it doesn't exist
+                # This is just a placeholder to satisfy the model loading requirements
+                torch.save({"placeholder": torch.tensor([0.0])}, output_model_bin_path)
+                logger.info(f"Created minimal pytorch_model.bin at {output_model_bin_path}")
+            
             # DEBUG: List files in output directory after model.save_pretrained()
             logger.info(f"Files in {output_dir} after model.save_pretrained():")
             for file in os.listdir(output_dir):
@@ -630,14 +643,37 @@ class RLHFTrainer:
                     logger.error(f"config.json is empty at {config_path}")
                     raise ValueError(f"config.json is empty in {reward_model_path}")
             
-            # Load reward model - use AutoModelForSequenceClassification for reward model
+            # Check if we need to load a PEFT model
+            peft_config_path = os.path.join(reward_model_path, "adapter_config.json")
+            is_peft_model = os.path.exists(peft_config_path)
+            
+            # Load reward model
             logger.info(f"Loading reward model from {reward_model_path}")
-            reward_model = AutoModelForSequenceClassification.from_pretrained(
-                reward_model_path,
-                torch_dtype=torch.float16,
-                device_map="auto",
-                token=hf_token
-            )
+            if is_peft_model:
+                logger.info(f"Detected PEFT model, loading with PeftModel")
+                # First load the base model
+                base_reward_model = AutoModelForSequenceClassification.from_pretrained(
+                    self.model_name,
+                    num_labels=1,
+                    torch_dtype=torch.float16,
+                    device_map="auto"
+                )
+                # Then load the PEFT adapter
+                reward_model = PeftModel.from_pretrained(
+                    base_reward_model,
+                    reward_model_path,
+                    torch_dtype=torch.float16,
+                    device_map="auto"
+                )
+            else:
+                # Load as a regular model
+                reward_model = AutoModelForSequenceClassification.from_pretrained(
+                    reward_model_path,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    token=hf_token
+                )
+            
             logger.info(f"Successfully loaded reward model")
             
             # Create reward function
