@@ -677,7 +677,7 @@ class RLHFTrainer:
             logger.info(f"Successfully loaded reward model")
             
             # Create reward function
-            def reward_function(samples):
+            def compute_reward(samples):
                 inputs = tokenizer(samples, return_tensors="pt", padding=True).to(reward_model.device)
                 with torch.no_grad():
                     outputs = reward_model(**inputs)
@@ -700,16 +700,33 @@ class RLHFTrainer:
                 model_name=output_dir
             )
             
-            # Initialize PPO trainer
+            # Initialize PPO trainer - in trl 0.7.0, reward_function is not passed to constructor
             ppo_trainer = PPOTrainer(
                 config=ppo_config,
                 model=model,
-                tokenizer=tokenizer,
-                reward_function=reward_function
+                tokenizer=tokenizer
             )
             
-            # Extract prompts
-            prompts = dataset["prompt"]
+            # Extract prompts from dataset
+            # First check if we have a 'prompt' column
+            if 'prompt' in dataset.column_names:
+                prompts = dataset["prompt"]
+            else:
+                # If not, extract prompts from the chosen/rejected columns
+                # This is a fallback for datasets prepared for reward modeling
+                if 'chosen' in dataset.column_names:
+                    # Extract prompts from chosen responses (assuming format: prompt\nresponse)
+                    prompts = []
+                    for chosen in dataset["chosen"]:
+                        if '\n' in chosen:
+                            prompt = chosen.split('\n')[0]
+                            prompts.append(prompt)
+                        else:
+                            # If no clear delimiter, use the first 50 chars as prompt
+                            prompts.append(chosen[:50])
+                else:
+                    # Create synthetic prompts if no clear source
+                    prompts = ["Generate a helpful response"] * len(dataset)
             
             # Training loop
             for epoch in range(3):  # 3 epochs
@@ -723,11 +740,11 @@ class RLHFTrainer:
                     response = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
                     response_decoded = tokenizer.decode(response[0])
                     
-                    # Compute reward
-                    reward = ppo_trainer.reward_function([response_decoded])[0]
+                    # Compute reward using our reward function (not passed to constructor in trl 0.7.0)
+                    reward = compute_reward([response_decoded])[0]
                     
                     # Run PPO step
-                    ppo_trainer.step([prompt], [response_decoded], [reward])
+                    train_stats = ppo_trainer.step([prompt], [response_decoded], [reward])
                     
                     if (i + 1) % 10 == 0:
                         logger.info(f"Processed {i+1}/{len(prompts)} examples in epoch {epoch+1}")
