@@ -558,12 +558,20 @@ class RLHFTrainer:
             # Set up tokenizer
             tokenizer = self.setup_tokenizer()
             
-            # Load base model with value head for PPO
-            model = AutoModelForCausalLMWithValueHead.from_pretrained(
+            # Load base model - IMPORTANT: First load the base model
+            base_model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.float16,
                 device_map="auto",
                 token=hf_token
+            )
+            
+            # IMPORTANT: Then wrap it with value head BEFORE applying LoRA
+            # This is the correct order for trl 0.7.0
+            model = AutoModelForCausalLMWithValueHead.from_pretrained(
+                base_model,
+                torch_dtype=torch.float16,
+                device_map="auto"
             )
             
             # Configure LoRA for parameter-efficient fine-tuning
@@ -576,7 +584,7 @@ class RLHFTrainer:
                 target_modules=["c_attn", "c_proj"]  # Changed for Mistral architecture
             )
             
-            # Apply LoRA directly without prepare_model_for_kbit_training
+            # Apply LoRA AFTER wrapping with value head
             model = get_peft_model(model, peft_config)
             
             # Check if config.json exists in reward_model_path
