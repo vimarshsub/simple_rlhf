@@ -15,6 +15,32 @@ print("\n\n")
 import sys
 import os
 import importlib.metadata
+import tempfile
+
+# Create necessary directories for Gradio
+try:
+    # Create /tmp directory if it doesn't exist
+    os.makedirs("/tmp", exist_ok=True)
+    
+    # Create /tmp/gradio directory for Gradio file uploads
+    os.makedirs("/tmp/gradio", exist_ok=True)
+    
+    # Set permissions to ensure it's writable
+    os.chmod("/tmp/gradio", 0o777)
+    
+    print(f"Created and verified /tmp/gradio directory for file uploads")
+except Exception as e:
+    print(f"Warning: Could not create /tmp/gradio directory: {str(e)}")
+    # Try alternative locations
+    try:
+        # Use the current directory as fallback
+        alt_dir = os.path.join(os.getcwd(), "gradio_tmp")
+        os.makedirs(alt_dir, exist_ok=True)
+        # Set environment variable to tell Gradio to use this directory
+        os.environ["GRADIO_TEMP_DIR"] = alt_dir
+        print(f"Using alternative temp directory: {alt_dir}")
+    except Exception as alt_e:
+        print(f"Warning: Could not create alternative temp directory: {str(alt_e)}")
 
 # Check versions before importing anything else
 try:
@@ -28,21 +54,13 @@ try:
     print("!" * 80)
     print("\n\n")
     
+    # Version warning only - no reinstall or restart
     if trl_version != "0.7.0" or transformers_version != "4.31.0":
-        print(f"ERROR: Incompatible versions detected! Found trl=={trl_version}, transformers=={transformers_version}")
-        print("Required: trl==0.7.0, transformers==4.31.0")
-        print("Installing correct versions...")
-        
-        import subprocess
-        subprocess.check_call([sys.executable, "-m", "pip", "install", 
-                              "trl==0.7.0", "transformers==4.31.0", 
-                              "--force-reinstall", "--no-cache-dir"])
-        
-        print("Correct versions installed. Restarting application...")
-        # This will restart the script with the correct versions
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        print(f"WARNING: Detected non-optimal versions: trl=={trl_version}, transformers=={transformers_version}")
+        print("Recommended: trl==0.7.0, transformers==4.31.0")
+        print("Continuing with current versions...")
 except Exception as e:
-    print(f"Error checking/fixing versions: {str(e)}")
+    print(f"Error checking versions: {str(e)}")
 
 import gradio as gr
 import pandas as pd
@@ -226,6 +244,10 @@ def view_feedback_data(min_rating=None):
 
 def create_interface():
     """Create the Gradio interface"""
+    # Configure Gradio cache directory
+    if "GRADIO_TEMP_DIR" in os.environ:
+        gr.paths.set_temp_dir(os.environ["GRADIO_TEMP_DIR"])
+    
     with gr.Blocks(title="Simple RLHF System") as interface:
         gr.Markdown("# Simple RLHF System for Mistral")
         gr.Markdown("This system allows you to experiment with Reinforcement Learning from Human Feedback (RLHF) using the Mistral model.")
