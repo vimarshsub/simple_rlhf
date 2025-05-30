@@ -392,12 +392,12 @@ class RLHFTrainer:
                 warmup_ratio=0.1,
             )
             
-            # Initialize reward trainer - dataset should already have the required columns
+            # Initialize reward trainer - in TRL 0.17.0, tokenizer is not passed directly
             trainer = RewardTrainer(
                 model=model,
                 args=training_args,
                 train_dataset=dataset,
-                tokenizer=tokenizer,  # Use tokenizer directly in trl 0.7.0
+                # tokenizer is not passed in TRL 0.17.0 - it's inferred from the model
             )
             
             # Train the model
