@@ -694,7 +694,7 @@ class RLHFTrainer:
             # Configure PPO training
             ppo_config = PPOConfig(
                 learning_rate=1.5e-5,
-                batch_size=8,
+                batch_size=8,  # Keep batch size at 8 but ensure we collect batches properly
                 mini_batch_size=1,
                 gradient_accumulation_steps=4,
                 optimize_cuda_cache=True,
@@ -736,26 +736,42 @@ class RLHFTrainer:
                     # Create synthetic prompts if no clear source
                     prompts = ["Generate a helpful response"] * len(dataset)
             
-            # Training loop
+            # Training loop with proper batching
             for epoch in range(3):  # 3 epochs
                 logger.info(f"Starting epoch {epoch+1}/3")
                 
-                for i, prompt in enumerate(prompts):
-                    # Tokenize prompt
-                    encoded_prompt = tokenizer(prompt, return_tensors="pt").to(ppo_trainer.model.device)
+                # Process prompts in batches of size matching PPO batch_size
+                batch_size = ppo_config.batch_size
+                for i in range(0, len(prompts), batch_size):
+                    # Get batch of prompts
+                    batch_prompts = prompts[i:i+batch_size]
+                    batch_size_actual = len(batch_prompts)  # Might be smaller than batch_size at the end
                     
-                    # Generate response
-                    response = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
-                    response_decoded = tokenizer.decode(response[0])
+                    # Generate responses for all prompts in batch
+                    batch_responses = []
+                    batch_response_tensors = []
                     
-                    # Compute reward using our reward function (not passed to constructor in trl 0.7.0)
-                    reward = compute_reward([response_decoded])[0]
+                    for prompt in batch_prompts:
+                        # Tokenize prompt
+                        encoded_prompt = tokenizer(prompt, return_tensors="pt").to(ppo_trainer.model.device)
+                        
+                        # Generate response
+                        response_tensor = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
+                        response_decoded = tokenizer.decode(response_tensor[0])
+                        
+                        batch_responses.append(response_decoded)
+                        batch_response_tensors.append(response_tensor)
                     
-                    # Run PPO step
-                    train_stats = ppo_trainer.step([prompt], [response_decoded], [reward])
+                    # Compute rewards for all responses in batch
+                    batch_rewards = compute_reward(batch_responses)
                     
-                    if (i + 1) % 10 == 0:
-                        logger.info(f"Processed {i+1}/{len(prompts)} examples in epoch {epoch+1}")
+                    # Ensure we have the right shapes for PPO step
+                    logger.info(f"Batch size: {batch_size_actual}, Responses: {len(batch_responses)}, Rewards: {len(batch_rewards)}")
+                    
+                    # Run PPO step on the batch
+                    train_stats = ppo_trainer.step(batch_prompts, batch_responses, batch_rewards)
+                    
+                    logger.info(f"Processed batch {i//batch_size + 1}/{(len(prompts) + batch_size - 1)//batch_size} in epoch {epoch+1}")
             
             # Save the trained model
             ppo_trainer.save_pretrained(output_dir)
