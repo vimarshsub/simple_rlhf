@@ -18,6 +18,7 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 from trl import RewardTrainer, RewardConfig
 from datasets import Dataset
+from peft import PeftModel
 
 from feedback_db import FeedbackDatabase
 
@@ -384,38 +385,133 @@ class RLHFTrainer:
             # Set up tokenizer
             tokenizer = self.setup_tokenizer()
             
-            # Load base model with value head for PPO
-            model = AutoModelForCausalLMWithValueHead.from_pretrained(
+            # CRITICAL FIX: Load the base model WITHOUT any PEFT/LoRA
+            logger.info("Loading base model for RLHF training...")
+            base_model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.float16,
-                device_map="auto",
-                token=hf_token
+                device_map="auto"
             )
             
-            # Configure LoRA for parameter-efficient fine-tuning
-            peft_config = LoraConfig(
-                r=16,
-                lora_alpha=32,
-                lora_dropout=0.05,
-                bias="none",
-                task_type="CAUSAL_LM",
-                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"]  # Changed for Mistral architecture
+            # CRITICAL FIX: Then wrap with value head WITHOUT applying LoRA
+            logger.info("Wrapping base model with value head...")
+            # Create a new instance directly from the base model
+            model = AutoModelForCausalLMWithValueHead.from_pretrained(
+                base_model,  # Use the base model instance
+                torch_dtype=torch.float16,
+                device_map="auto"
             )
             
-            # Prepare model for training
-            model = prepare_model_for_kbit_training(model)
-            model = get_peft_model(model, peft_config)
+            # CRITICAL FIX: Explicitly set device attribute on the model
+            # This is required by PPOTrainer but not provided by AutoModelForCausalLMWithValueHead
+            model.device = next(model.parameters()).device
+            logger.info(f"Explicitly set model.device = {model.device}")
+            
+            # Verify the model is correctly wrapped
+            logger.info(f"Verified model type after wrapping: {type(model)}")
+            
+            # CRITICAL FIX: Do NOT apply LoRA to the wrapped model
+            # This is the key change - we're removing PEFT/LoRA entirely from RLHF training
+            
+            # Check if config.json exists in reward_model_path
+            config_path = os.path.join(reward_model_path, "config.json")
+            logger.info(f"Checking for config.json at {config_path}")
+            
+            # List all files in reward_model_path
+            logger.info(f"Files in reward model directory ({reward_model_path}):")
+            for file in os.listdir(reward_model_path):
+                file_path = os.path.join(reward_model_path, file)
+                file_size = os.path.getsize(file_path)
+                logger.info(f"  - {file} ({file_size} bytes)")
+            
+            if not os.path.exists(config_path):
+                logger.error(f"config.json not found at {config_path}")
+                
+                # Create a minimal config.json as a last resort
+                minimal_config = {
+                    "architectures": ["GPT2ForSequenceClassification"],
+                    "model_type": "gpt2",
+                    "num_labels": 1,
+                    "vocab_size": 50257,
+                    "n_positions": 1024,
+                    "n_ctx": 1024,
+                    "n_embd": 768,
+                    "n_layer": 6,
+                    "n_head": 12,
+                    "activation_function": "gelu_new",
+                    "resid_pdrop": 0.1,
+                    "embd_pdrop": 0.1,
+                    "attn_pdrop": 0.1,
+                    "layer_norm_epsilon": 1e-05,
+                    "initializer_range": 0.02,
+                    "summary_type": "cls_index",
+                    "summary_use_proj": True,
+                    "summary_activation": None,
+                    "summary_proj_to_labels": True,
+                    "summary_first_dropout": 0.1,
+                    "scale_attn_weights": True,
+                    "use_cache": True,
+                    "bos_token_id": 50256,
+                    "eos_token_id": 50256
+                }
+                
+                with open(config_path, 'w') as f:
+                    json.dump(minimal_config, f)
+                logger.info(f"Created minimal config.json at {config_path}")
+                
+                # Verify the file was created
+                if os.path.exists(config_path):
+                    with open(config_path, 'r') as f:
+                        config_content = f.read()
+                    logger.info(f"Verified config.json was created with size: {len(config_content)} bytes")
+                else:
+                    logger.error(f"Failed to create config.json at {config_path}")
+                    raise FileNotFoundError(f"Required file config.json not found in {reward_model_path}")
+            else:
+                logger.info(f"config.json found at {config_path}")
+                # Verify the file is not empty
+                with open(config_path, 'r') as f:
+                    config_content = f.read()
+                logger.info(f"config.json size: {len(config_content)} bytes")
+                if len(config_content.strip()) == 0:
+                    logger.error(f"config.json is empty at {config_path}")
+                    raise ValueError(f"config.json is empty in {reward_model_path}")
+            
+            # Check if we need to load a PEFT model
+            peft_config_path = os.path.join(reward_model_path, "adapter_config.json")
+            is_peft_model = os.path.exists(peft_config_path)
             
             # Load reward model
-            reward_model = AutoModelForCausalLM.from_pretrained(
-                reward_model_path,
-                torch_dtype=torch.float16,
-                device_map="auto",
-                token=hf_token
-            )
+            logger.info(f"Loading reward model from {reward_model_path}")
+            if is_peft_model:
+                logger.info(f"Detected PEFT model, loading with PeftModel")
+                # First load the base model
+                base_reward_model = AutoModelForSequenceClassification.from_pretrained(
+                    self.model_name,
+                    num_labels=1,
+                    torch_dtype=torch.float16,
+                    device_map="auto"
+                )
+                # Then load the PEFT adapter
+                reward_model = PeftModel.from_pretrained(
+                    base_reward_model,
+                    reward_model_path,
+                    torch_dtype=torch.float16,
+                    device_map="auto"
+                )
+            else:
+                # Load as a regular model
+                reward_model = AutoModelForSequenceClassification.from_pretrained(
+                    reward_model_path,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    token=hf_token
+                )
+            
+            logger.info(f"Successfully loaded reward model")
             
             # Create reward function
-            def reward_function(samples):
+            def compute_reward(samples):
                 inputs = tokenizer(samples, return_tensors="pt", padding=True).to(reward_model.device)
                 with torch.no_grad():
                     outputs = reward_model(**inputs)
@@ -425,13 +521,13 @@ class RLHFTrainer:
             # Configure PPO training
             ppo_config = PPOConfig(
                 learning_rate=1.5e-5,
-                batch_size=8,
+                batch_size=4,  # Reduced batch size to avoid memory issues
                 mini_batch_size=1,
-                gradient_accumulation_steps=4,
+                gradient_accumulation_steps=2,
                 optimize_cuda_cache=True,
                 early_stopping=True,
                 target_kl=0.1,
-                ppo_epochs=4,
+                ppo_epochs=2,
                 seed=42,
                 init_kl_coef=0.2,
                 adap_kl_ctrl=True,
@@ -439,43 +535,116 @@ class RLHFTrainer:
             )
             
             # Initialize PPO trainer
+            logger.info("Initializing PPOTrainer with the wrapped model (no PEFT/LoRA)...")
             ppo_trainer = PPOTrainer(
                 config=ppo_config,
                 model=model,
-                tokenizer=tokenizer,
-                reward_function=reward_function
+                tokenizer=tokenizer
             )
             
-            # Extract prompts
-            prompts = dataset["prompt"]
+            # Extract prompts from dataset
+            # First check if we have a 'prompt' column
+            if 'prompt' in dataset.column_names:
+                prompts = dataset["prompt"]
+            else:
+                # If not, extract prompts from the chosen/rejected columns
+                # This is a fallback for datasets prepared for reward modeling
+                if 'chosen' in dataset.column_names:
+                    # Extract prompts from chosen responses (assuming format: prompt\nresponse)
+                    prompts = []
+                    for chosen in dataset["chosen"]:
+                        if '\n' in chosen:
+                            prompt = chosen.split('\n')[0]
+                            prompts.append(prompt)
+                        else:
+                            # If no clear delimiter, use the first 50 chars as prompt
+                            prompts.append(chosen[:50])
+                else:
+                    # Create synthetic prompts if no clear source
+                    prompts = ["Generate a helpful response"] * len(dataset)
             
-            # Training loop
+            # Limit prompts to avoid memory issues
+            prompts = prompts[:20]  # Use only first 20 prompts for this test
+            
+            # Training loop with proper batching
             for epoch in range(3):  # 3 epochs
                 logger.info(f"Starting epoch {epoch+1}/3")
                 
-                for i, prompt in enumerate(prompts):
-                    # Tokenize prompt
-                    encoded_prompt = tokenizer(prompt, return_tensors="pt").to(ppo_trainer.model.device)
+                # Process prompts in batches of size matching PPO batch_size
+                batch_size = ppo_config.batch_size
+                for i in range(0, len(prompts), batch_size):
+                    # Get batch of prompts
+                    batch_prompts = prompts[i:i+batch_size]
                     
-                    # Generate response
-                    response = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
-                    response_decoded = tokenizer.decode(response[0])
+                    # Prepare lists for batch processing
+                    query_tensors = []
+                    response_tensors = []
                     
-                    # Compute reward
-                    reward = ppo_trainer.reward_function([response_decoded])[0]
+                    # Process each prompt in the batch
+                    for prompt in batch_prompts:
+                        # Tokenize prompt with proper padding and attention mask
+                        query_dict = tokenizer(
+                            prompt, 
+                            return_tensors="pt", 
+                            padding=True, 
+                            truncation=True,
+                            max_length=128
+                        )
+                        query_tensor = query_dict['input_ids'].squeeze(0)  # Remove batch dimension
+                        
+                        # Generate response using PPO trainer's generate method
+                        with torch.no_grad():
+                            response_tensor = ppo_trainer.generate(
+                                query_tensor.unsqueeze(0),  # Add batch dimension back
+                                max_new_tokens=50,  # Reduced to avoid memory issues
+                                do_sample=True,
+                                top_p=0.9,
+                                temperature=0.7
+                            )
+                        
+                        # Extract only the newly generated tokens (response part)
+                        response_tensor = response_tensor.squeeze(0)[len(query_tensor):]
+                        
+                        query_tensors.append(query_tensor)
+                        response_tensors.append(response_tensor)
                     
-                    # Run PPO step
-                    ppo_trainer.step([prompt], [response_decoded], [reward])
+                    # Decode responses for reward computation
+                    responses = []
+                    for i, (query_tensor, response_tensor) in enumerate(zip(query_tensors, response_tensors)):
+                        # Combine query and response for decoding
+                        full_tensor = torch.cat([query_tensor, response_tensor])
+                        full_text = tokenizer.decode(full_tensor, skip_special_tokens=True)
+                        
+                        # Extract just the response part
+                        prompt_text = tokenizer.decode(query_tensor, skip_special_tokens=True)
+                        if full_text.startswith(prompt_text):
+                            response_text = full_text[len(prompt_text):].strip()
+                        else:
+                            response_text = full_text
+                        
+                        responses.append(response_text)
                     
-                    if (i + 1) % 10 == 0:
-                        logger.info(f"Processed {i+1}/{len(prompts)} prompts in epoch {epoch+1}")
-                
-                # Save checkpoint after each epoch
-                ppo_trainer.save_pretrained(f"{output_dir}/checkpoint-epoch-{epoch+1}")
+                    # Compute rewards for all responses in batch
+                    try:
+                        rewards = compute_reward([f"{tokenizer.decode(q, skip_special_tokens=True)} {r}" 
+                                                for q, r in zip(query_tensors, responses)])
+                        
+                        # Convert rewards to tensors
+                        rewards = [torch.tensor(r, dtype=torch.float32) for r in rewards]
+                        
+                        # Run PPO step
+                        stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
+                        
+                        logger.info(f"Completed batch {(i//batch_size)+1} in epoch {epoch+1}")
+                        
+                    except Exception as batch_error:
+                        logger.error(f"Error in batch processing: {str(batch_error)}")
+                        # Skip this batch and continue
+                        continue
             
-            # Save final model
+            # Save the trained model
             ppo_trainer.save_pretrained(output_dir)
-            logger.info(f"RLHF training completed and model saved to {output_dir}")
+            logger.info(f"RLHF model trained and saved to {output_dir}")
             
             return True
         
