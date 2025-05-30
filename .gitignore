@@ -128,18 +128,74 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# Model files and training outputs
+# Model files and training outputs - CRITICAL: Exclude large ML model files
 *.bin
 *.safetensors
+*.pt
+*.pth
+*.ckpt
+*.model
+*.pkl
+*.pickle
 reward_model/
 rlhf_model/
 models/
 checkpoints/
+cache/
+wandb/
 
-# Data files
+# Data files - CRITICAL: Exclude large datasets and databases
 *.db
 *.sqlite
+*.sqlite3
+data/*.csv
+data/*.json
+data/*.parquet
+data/*.h5
+data/*.hdf5
 
-# Logs
+# Large test files that shouldn't be in git
+test_reward_trainer.py
+test_*.py.bak
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Cache directories
+__pycache__/
+.cache/
+.pytest_cache/
+
+# Logs and temporary files
 logs/
-*.log 
+*.log
+*.tmp
+*.temp
+temp/
+tmp/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# HuggingFace cache (can be very large)
+.cache/huggingface/
+~/.cache/huggingface/
+
+# Weights & Biases
+wandb/ 
