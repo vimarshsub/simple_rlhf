@@ -694,7 +694,7 @@ class RLHFTrainer:
             # Configure PPO training
             ppo_config = PPOConfig(
                 learning_rate=1.5e-5,
-                batch_size=8,  # Keep batch size at 8 but ensure we collect batches properly
+                batch_size=1,  # CRITICAL FIX: Set batch_size to 1 to avoid shape mismatch
                 mini_batch_size=1,
                 gradient_accumulation_steps=4,
                 optimize_cuda_cache=True,
@@ -736,42 +736,43 @@ class RLHFTrainer:
                     # Create synthetic prompts if no clear source
                     prompts = ["Generate a helpful response"] * len(dataset)
             
-            # Training loop with proper batching
+            # CRITICAL FIX: Process one prompt at a time to avoid shape mismatch
             for epoch in range(3):  # 3 epochs
                 logger.info(f"Starting epoch {epoch+1}/3")
                 
-                # Process prompts in batches of size matching PPO batch_size
-                batch_size = ppo_config.batch_size
-                for i in range(0, len(prompts), batch_size):
-                    # Get batch of prompts
-                    batch_prompts = prompts[i:i+batch_size]
-                    batch_size_actual = len(batch_prompts)  # Might be smaller than batch_size at the end
+                for i, prompt in enumerate(prompts):
+                    # Log progress
+                    logger.info(f"Processing prompt {i+1}/{len(prompts)} in epoch {epoch+1}")
                     
-                    # Generate responses for all prompts in batch
-                    batch_responses = []
-                    batch_response_tensors = []
+                    # Tokenize prompt
+                    encoded_prompt = tokenizer(prompt, return_tensors="pt").to(ppo_trainer.model.device)
                     
-                    for prompt in batch_prompts:
-                        # Tokenize prompt
-                        encoded_prompt = tokenizer(prompt, return_tensors="pt").to(ppo_trainer.model.device)
-                        
-                        # Generate response
-                        response_tensor = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
-                        response_decoded = tokenizer.decode(response_tensor[0])
-                        
-                        batch_responses.append(response_decoded)
-                        batch_response_tensors.append(response_tensor)
+                    # Generate response
+                    response_tensor = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
+                    response_decoded = tokenizer.decode(response_tensor[0])
                     
-                    # Compute rewards for all responses in batch
-                    batch_rewards = compute_reward(batch_responses)
+                    # Compute reward
+                    reward = compute_reward([response_decoded])[0]
                     
-                    # Ensure we have the right shapes for PPO step
-                    logger.info(f"Batch size: {batch_size_actual}, Responses: {len(batch_responses)}, Rewards: {len(batch_rewards)}")
+                    # Debug tensor shapes
+                    logger.info(f"Prompt shape: {encoded_prompt.input_ids.shape}")
+                    logger.info(f"Response shape: {response_tensor.shape}")
+                    logger.info(f"Reward shape: Single scalar value")
                     
-                    # Run PPO step on the batch
-                    train_stats = ppo_trainer.step(batch_prompts, batch_responses, batch_rewards)
+                    # CRITICAL FIX: Ensure all inputs are lists with length 1
+                    prompt_list = [prompt]
+                    response_list = [response_decoded]
+                    reward_list = [reward]
                     
-                    logger.info(f"Processed batch {i//batch_size + 1}/{(len(prompts) + batch_size - 1)//batch_size} in epoch {epoch+1}")
+                    # Log shapes before PPO step
+                    logger.info(f"prompt_list length: {len(prompt_list)}")
+                    logger.info(f"response_list length: {len(response_list)}")
+                    logger.info(f"reward_list length: {len(reward_list)}")
+                    
+                    # Run PPO step
+                    train_stats = ppo_trainer.step(prompt_list, response_list, reward_list)
+                    
+                    logger.info(f"Completed PPO step for prompt {i+1} in epoch {epoch+1}")
             
             # Save the trained model
             ppo_trainer.save_pretrained(output_dir)
