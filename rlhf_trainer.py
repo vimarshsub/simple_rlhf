@@ -71,7 +71,15 @@ class RLHFTrainer:
         hf_token = os.environ.get("HUGGING_FACE_HUB_TOKEN")
         
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, token=hf_token)
-        tokenizer.pad_token = tokenizer.eos_token
+        
+        # Ensure proper padding configuration
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+            
+        # Set padding side to left for generation (important for PPO)
+        tokenizer.padding_side = "left"
+        
         return tokenizer
     
     def setup_model(self, quantize=True):
@@ -696,20 +704,26 @@ class RLHFTrainer:
             # Configure PPO training with batch_size=8 to match internal expectations
             ppo_config = PPOConfig(
                 learning_rate=1.5e-5,
+<<<<<<< HEAD
                 batch_size=8,  # CRITICAL FIX: Set batch_size to 8 to match internal expectations
                 mini_batch_size=8,
                 gradient_accumulation_steps=1,
+=======
+                batch_size=4,  # Reduced batch size to avoid memory issues
+                mini_batch_size=1,
+                gradient_accumulation_steps=2,
+>>>>>>> cf749941bdebe8a5139485b6d848b805e3e3159a
                 optimize_cuda_cache=True,
                 early_stopping=True,
                 target_kl=0.1,
-                ppo_epochs=4,
+                ppo_epochs=2,
                 seed=42,
                 init_kl_coef=0.2,
                 adap_kl_ctrl=True,
                 model_name=output_dir
             )
             
-            # Initialize PPO trainer - in trl 0.7.0, reward_function is not passed to constructor
+            # Initialize PPO trainer
             logger.info("Initializing PPOTrainer with the wrapped model (no PEFT/LoRA)...")
             ppo_trainer = PPOTrainer(
                 config=ppo_config,
@@ -738,7 +752,14 @@ class RLHFTrainer:
                     # Create synthetic prompts if no clear source
                     prompts = ["Generate a helpful response"] * len(dataset)
             
+<<<<<<< HEAD
             # CRITICAL FIX: Process prompts in batches of size 8 to match PPOTrainer's expectations
+=======
+            # Limit prompts to avoid memory issues
+            prompts = prompts[:20]  # Use only first 20 prompts for this test
+            
+            # Training loop with proper batching
+>>>>>>> cf749941bdebe8a5139485b6d848b805e3e3159a
             for epoch in range(3):  # 3 epochs
                 logger.info(f"Starting epoch {epoch+1}/3")
                 
@@ -746,6 +767,7 @@ class RLHFTrainer:
                 batch_size = ppo_config.batch_size  # Use the same batch size as in PPOConfig
                 
                 for i in range(0, len(prompts), batch_size):
+<<<<<<< HEAD
                     # Get batch of prompts (pad if needed)
                     batch_end = min(i + batch_size, len(prompts))
                     batch_prompts = prompts[i:batch_end]
@@ -761,15 +783,38 @@ class RLHFTrainer:
                     # Generate responses for all prompts in batch
                     batch_responses = []
                     batch_rewards = []
+=======
+                    # Get batch of prompts
+                    batch_prompts = prompts[i:i+batch_size]
                     
+                    # Prepare lists for batch processing
+                    query_tensors = []
+                    response_tensors = []
+>>>>>>> cf749941bdebe8a5139485b6d848b805e3e3159a
+                    
+                    # Process each prompt in the batch
                     for prompt in batch_prompts:
-                        # Tokenize prompt
-                        encoded_prompt = tokenizer(prompt, return_tensors="pt").to(ppo_trainer.model.device)
+                        # Tokenize prompt with proper padding and attention mask
+                        query_dict = tokenizer(
+                            prompt, 
+                            return_tensors="pt", 
+                            padding=True, 
+                            truncation=True,
+                            max_length=128
+                        )
+                        query_tensor = query_dict['input_ids'].squeeze(0)  # Remove batch dimension
                         
-                        # Generate response
-                        response_tensor = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
-                        response_decoded = tokenizer.decode(response_tensor[0])
+                        # Generate response using PPO trainer's generate method
+                        with torch.no_grad():
+                            response_tensor = ppo_trainer.generate(
+                                query_tensor.unsqueeze(0),  # Add batch dimension back
+                                max_new_tokens=50,  # Reduced to avoid memory issues
+                                do_sample=True,
+                                top_p=0.9,
+                                temperature=0.7
+                            )
                         
+<<<<<<< HEAD
                         # Add to batch
                         batch_responses.append(response_decoded)
                     
@@ -790,6 +835,47 @@ class RLHFTrainer:
                     train_stats = ppo_trainer.step(batch_prompts, batch_responses, batch_rewards)
                     
                     logger.info(f"Completed PPO step for prompt {i+1} in epoch {epoch+1}")
+=======
+                        # Extract only the newly generated tokens (response part)
+                        response_tensor = response_tensor.squeeze(0)[len(query_tensor):]
+                        
+                        query_tensors.append(query_tensor)
+                        response_tensors.append(response_tensor)
+                    
+                    # Decode responses for reward computation
+                    responses = []
+                    for i, (query_tensor, response_tensor) in enumerate(zip(query_tensors, response_tensors)):
+                        # Combine query and response for decoding
+                        full_tensor = torch.cat([query_tensor, response_tensor])
+                        full_text = tokenizer.decode(full_tensor, skip_special_tokens=True)
+                        
+                        # Extract just the response part
+                        prompt_text = tokenizer.decode(query_tensor, skip_special_tokens=True)
+                        if full_text.startswith(prompt_text):
+                            response_text = full_text[len(prompt_text):].strip()
+                        else:
+                            response_text = full_text
+                        
+                        responses.append(response_text)
+                    
+                    # Compute rewards for all responses in batch
+                    try:
+                        rewards = compute_reward([f"{tokenizer.decode(q, skip_special_tokens=True)} {r}" 
+                                                for q, r in zip(query_tensors, responses)])
+                        
+                        # Convert rewards to tensors
+                        rewards = [torch.tensor(r, dtype=torch.float32) for r in rewards]
+                        
+                        # Run PPO step
+                        stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
+                        
+                        logger.info(f"Completed batch {(i//batch_size)+1} in epoch {epoch+1}")
+                        
+                    except Exception as batch_error:
+                        logger.error(f"Error in batch processing: {str(batch_error)}")
+                        # Skip this batch and continue
+                        continue
+>>>>>>> cf749941bdebe8a5139485b6d848b805e3e3159a
             
             # Save the trained model
             ppo_trainer.save_pretrained(output_dir)
