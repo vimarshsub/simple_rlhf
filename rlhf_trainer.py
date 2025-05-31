@@ -768,9 +768,11 @@ class RLHFTrainer:
                     
                     logger.info(f"Processing batch {i//batch_size + 1}/{(len(prompts) + batch_size - 1)//batch_size} in epoch {epoch+1}")
                     
-                    # Generate responses for all prompts in batch
-                    batch_responses = []
-                    batch_rewards = []
+                    # CRITICAL FIX: Prepare tensors for PPOTrainer.step
+                    # PPOTrainer expects lists of tensors, not strings
+                    query_tensors = []
+                    response_tensors = []
+                    rewards = []
                     
                     # Process each prompt in the batch
                     for prompt in batch_prompts:
@@ -782,39 +784,42 @@ class RLHFTrainer:
                             truncation=True,
                             max_length=128
                         )
-                        query_tensor = query_dict['input_ids'].squeeze(0)  # Remove batch dimension
+                        # Move input to the correct device
+                        query_tensor = query_dict['input_ids'].to(ppo_trainer.model.device)
                         
                         # Generate response using PPO trainer's generate method
                         with torch.no_grad():
                             response_tensor = ppo_trainer.generate(
-                                query_tensor.unsqueeze(0),  # Add batch dimension back
+                                query_tensor,  # Already has batch dimension
                                 max_new_tokens=50,  # Reduced to avoid memory issues
                                 do_sample=True,
                                 top_p=0.9,
                                 temperature=0.7
                             )
                         
-                        # Decode the response
-                        response_decoded = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
+                        # For reward computation, we need the decoded text
+                        response_text = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
                         
-                        # Add to batch
-                        batch_responses.append(response_decoded)
+                        # Store tensors for PPO
+                        query_tensors.append(query_tensor[0])  # Remove batch dimension for PPO
+                        response_tensors.append(response_tensor[0][query_tensor.shape[1]:])  # Only new tokens
+                        
+                        # Compute reward for this response
+                        reward = compute_reward([response_text])[0]
+                        rewards.append(reward)
                     
-                    # Compute rewards for all responses in batch
-                    batch_rewards = compute_reward(batch_responses)
+                    # Debug tensor information
+                    logger.info(f"Query tensors count: {len(query_tensors)}")
+                    logger.info(f"Response tensors count: {len(response_tensors)}")
+                    logger.info(f"Rewards count: {len(rewards)}")
                     
-                    # Debug batch information
-                    logger.info(f"Batch size: {len(batch_prompts)}")
-                    logger.info(f"Responses batch size: {len(batch_responses)}")
-                    logger.info(f"Rewards batch size: {len(batch_rewards)}")
+                    # Verify all counts match
+                    assert len(query_tensors) == batch_size, f"Query tensor count {len(query_tensors)} doesn't match expected {batch_size}"
+                    assert len(response_tensors) == batch_size, f"Response tensor count {len(response_tensors)} doesn't match expected {batch_size}"
+                    assert len(rewards) == batch_size, f"Rewards count {len(rewards)} doesn't match expected {batch_size}"
                     
-                    # Verify all batch sizes match
-                    assert len(batch_prompts) == batch_size, f"Prompt batch size {len(batch_prompts)} doesn't match expected {batch_size}"
-                    assert len(batch_responses) == batch_size, f"Response batch size {len(batch_responses)} doesn't match expected {batch_size}"
-                    assert len(batch_rewards) == batch_size, f"Reward batch size {len(batch_rewards)} doesn't match expected {batch_size}"
-                    
-                    # Run PPO step with the full batch
-                    train_stats = ppo_trainer.step(batch_prompts, batch_responses, batch_rewards)
+                    # Run PPO step with the tensor inputs
+                    train_stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
                     
                     logger.info(f"Completed PPO step for batch {i//batch_size + 1} in epoch {epoch+1}")
             
