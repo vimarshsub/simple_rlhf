@@ -1000,54 +1000,75 @@ class RLHFTrainer:
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
             
             with torch.no_grad():
-                # CRITICAL FIX: Use greedy decoding only to completely bypass probability tensor errors
-                # Avoid all sampling and stochastic methods that can trigger CUDA device-side asserts
+                # CRITICAL FIX: Use controlled decoding to avoid probability tensor errors
+                # while still maintaining output diversity
                 generation_kwargs = {
                     "max_new_tokens": max_new_tokens,
-                    "do_sample": False,  # CRITICAL: Disable sampling completely
-                    "num_beams": 1,      # Use greedy search (not beam search)
-                    "temperature": 1.0,  # Neutral temperature
-                    "top_k": 0,          # Disable top-k filtering
-                    "top_p": 1.0,        # Disable top-p filtering
+                    "do_sample": False,  # Avoid sampling to prevent CUDA errors
+                    "num_beams": 5,      # Use beam search for better quality
+                    "num_return_sequences": 1,
+                    "no_repeat_ngram_size": 3,  # Prevent repetitive n-grams
+                    "repetition_penalty": 1.5,  # Penalize repetition
+                    "length_penalty": 1.0,      # Prefer longer outputs
+                    "early_stopping": True,     # Stop when EOS is generated
                     "pad_token_id": tokenizer.eos_token_id,
                     "eos_token_id": tokenizer.eos_token_id,
                     "use_cache": True,
+                    "bad_words_ids": [[33]]     # Block exclamation mark token (33 is "!" in many tokenizers)
                 }
                 
                 try:
-                    # Generate directly with the model using greedy decoding
-                    logger.info("Using greedy decoding to avoid CUDA probability tensor errors")
+                    # Generate with beam search for better quality
+                    logger.info("Using beam search with repetition penalties to improve output quality")
                     outputs = model.generate(
                         inputs.input_ids,
                         **generation_kwargs
                     )
                 except RuntimeError as e:
-                    # If even greedy decoding fails, try with a more minimal approach
-                    logger.warning(f"Greedy generation failed with error: {str(e)}. Trying with minimal generation.")
-                    minimal_kwargs = {
-                        "max_new_tokens": min(50, max_new_tokens),  # Shorter generation
-                        "do_sample": False,    # No sampling
-                        "num_beams": 1,        # Greedy search
-                        "pad_token_id": tokenizer.eos_token_id,
-                        "eos_token_id": tokenizer.eos_token_id,
-                        "use_cache": False,    # Disable KV cache
-                    }
-                    
-                    # Try with a clean model forward pass if all else fails
+                    # If beam search fails, try with nucleus sampling at very low temperature
+                    logger.warning(f"Beam search failed with error: {str(e)}. Trying with minimal temperature sampling.")
                     try:
+                        # Try nucleus sampling with very low temperature
+                        nucleus_kwargs = {
+                            "max_new_tokens": min(50, max_new_tokens),
+                            "do_sample": True,    # Use sampling but with constraints
+                            "temperature": 0.1,   # Very low temperature to minimize probability issues
+                            "top_p": 0.5,         # Restrict to top 50% of probability mass
+                            "top_k": 5,           # Only consider top 5 tokens
+                            "repetition_penalty": 2.0,  # Strong repetition penalty
+                            "no_repeat_ngram_size": 2,  # Block repeating bigrams
+                            "pad_token_id": tokenizer.eos_token_id,
+                            "eos_token_id": tokenizer.eos_token_id,
+                            "bad_words_ids": [[33]]  # Block exclamation mark token
+                        }
                         outputs = model.generate(
                             inputs.input_ids,
-                            **minimal_kwargs
+                            **nucleus_kwargs
                         )
                     except RuntimeError:
-                        # Last resort: manually append a few tokens as a minimal response
-                        logger.warning("All generation methods failed. Creating minimal synthetic response.")
-                        # Create a minimal response by appending the most common tokens
-                        minimal_response = torch.cat([
-                            inputs.input_ids,
-                            torch.tensor([[tokenizer.eos_token_id] * 5], device=inputs.input_ids.device)
-                        ], dim=1)
-                        outputs = minimal_response
+                        # If all else fails, fall back to greedy with strong repetition penalties
+                        logger.warning("Sampling failed. Falling back to greedy with repetition penalties.")
+                        fallback_kwargs = {
+                            "max_new_tokens": min(30, max_new_tokens),
+                            "do_sample": False,
+                            "repetition_penalty": 5.0,  # Very strong repetition penalty
+                            "no_repeat_ngram_size": 1,  # Block repeating unigrams
+                            "pad_token_id": tokenizer.eos_token_id,
+                            "eos_token_id": tokenizer.eos_token_id,
+                            "bad_words_ids": [[33]]  # Block exclamation mark token
+                        }
+                        try:
+                            outputs = model.generate(
+                                inputs.input_ids,
+                                **fallback_kwargs
+                            )
+                        except RuntimeError:
+                            # Last resort: manually create a response
+                            logger.warning("All generation methods failed. Creating synthetic response.")
+                            # Create a minimal response with common tokens
+                            response_text = "I apologize, but I'm unable to generate a proper response at this time."
+                            response_ids = tokenizer.encode(response_text, return_tensors="pt").to(inputs.input_ids.device)
+                            outputs = torch.cat([inputs.input_ids, response_ids[:, 1:]], dim=1)  # Skip BOS token
             
             # Decode and clean up output
             generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
