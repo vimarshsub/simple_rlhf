@@ -701,12 +701,12 @@ class RLHFTrainer:
                 rewards = outputs.logits[:, -1].cpu().tolist()
                 return rewards
             
-            # Configure PPO training with batch_size=1 to avoid shape mismatch errors
+            # Configure PPO training with valid batch parameters
             ppo_config = PPOConfig(
                 learning_rate=1.5e-5,
-                batch_size=1,  # CRITICAL FIX: Set batch_size to 1 to avoid shape mismatch errors
+                batch_size=8,  # CRITICAL FIX: Set batch_size to match mini_batch_size * gradient_accumulation_steps
                 mini_batch_size=1,
-                gradient_accumulation_steps=8,  # Increased to maintain effective batch size
+                gradient_accumulation_steps=8,  # Maintain effective batch size
                 optimize_cuda_cache=True,
                 early_stopping=True,
                 target_kl=0.1,
@@ -746,56 +746,82 @@ class RLHFTrainer:
                     # Create synthetic prompts if no clear source
                     prompts = ["Generate a helpful response"] * len(dataset)
             
-            # CRITICAL FIX: Process prompts one at a time to avoid shape mismatch errors
+            # CRITICAL FIX: Process prompts in batches of 8 to match PPOTrainer's batch_size requirement
             # Limit prompts to avoid memory issues
             prompts = prompts[:20]  # Use only first 20 prompts for this test
             for epoch in range(3):  # 3 epochs
                 logger.info(f"Starting epoch {epoch+1}/3")
                 
-                # Process one prompt at a time
-                for i, prompt in enumerate(prompts):
-                    logger.info(f"Processing prompt {i+1}/{len(prompts)} in epoch {epoch+1}")
+                # Process prompts in batches of size 8
+                batch_size = ppo_config.batch_size  # Use the same batch size as in PPOConfig
+                
+                for i in range(0, len(prompts), batch_size):
+                    # Get batch of prompts (pad if needed)
+                    batch_end = min(i + batch_size, len(prompts))
+                    batch_prompts = prompts[i:batch_end]
                     
-                    # Tokenize prompt with proper padding and attention mask
-                    query_dict = tokenizer(
-                        prompt, 
-                        return_tensors="pt", 
-                        padding=True, 
-                        truncation=True,
-                        max_length=128
-                    )
-                    # Move input to the correct device
-                    query_tensor = query_dict['input_ids'].to(ppo_trainer.model.device)
+                    # If we don't have enough prompts to fill a batch, duplicate the last one
+                    if len(batch_prompts) < batch_size:
+                        logger.info(f"Padding batch with {batch_size - len(batch_prompts)} duplicates to reach batch_size={batch_size}")
+                        padding_needed = batch_size - len(batch_prompts)
+                        batch_prompts = list(batch_prompts) + [batch_prompts[-1]] * padding_needed
                     
-                    # Generate response using PPO trainer's generate method
-                    with torch.no_grad():
-                        response_tensor = ppo_trainer.generate(
-                            query_tensor,  # Already has batch dimension
-                            max_new_tokens=50,  # Reduced to avoid memory issues
-                            do_sample=True,
-                            top_p=0.9,
-                            temperature=0.7
+                    logger.info(f"Processing batch {i//batch_size + 1}/{(len(prompts) + batch_size - 1)//batch_size} in epoch {epoch+1}")
+                    
+                    # CRITICAL FIX: Process each example individually but collect for batch step
+                    query_tensors = []
+                    response_tensors = []
+                    rewards = []
+                    
+                    # Process each prompt in the batch
+                    for prompt in batch_prompts:
+                        # Tokenize prompt with proper padding and attention mask
+                        query_dict = tokenizer(
+                            prompt, 
+                            return_tensors="pt", 
+                            padding=True, 
+                            truncation=True,
+                            max_length=128
                         )
+                        # Move input to the correct device
+                        query_tensor = query_dict['input_ids'].to(ppo_trainer.model.device)
+                        
+                        # Generate response using PPO trainer's generate method
+                        with torch.no_grad():
+                            response_tensor = ppo_trainer.generate(
+                                query_tensor,  # Already has batch dimension
+                                max_new_tokens=50,  # Reduced to avoid memory issues
+                                do_sample=True,
+                                top_p=0.9,
+                                temperature=0.7
+                            )
+                        
+                        # For reward computation, we need the decoded text
+                        response_text = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
+                        
+                        # Compute reward for this response
+                        reward = compute_reward([response_text])[0]
+                        
+                        # Store tensors for PPO
+                        query_tensors.append(query_tensor[0])  # Remove batch dimension for PPO
+                        response_tensors.append(response_tensor[0][query_tensor.shape[1]:])  # Only new tokens
+                        rewards.append(reward)
+                        
+                        # Debug information for each example
+                        logger.info(f"Processed example: prompt='{prompt[:30]}...', reward={reward}")
                     
-                    # For reward computation, we need the decoded text
-                    response_text = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
+                    # Debug batch information
+                    logger.info(f"Collected batch: {len(query_tensors)} examples")
                     
-                    # Compute reward for this response
-                    reward = compute_reward([response_text])[0]
+                    # Verify batch size
+                    assert len(query_tensors) == batch_size, f"Query tensor count {len(query_tensors)} doesn't match expected {batch_size}"
+                    assert len(response_tensors) == batch_size, f"Response tensor count {len(response_tensors)} doesn't match expected {batch_size}"
+                    assert len(rewards) == batch_size, f"Rewards count {len(rewards)} doesn't match expected {batch_size}"
                     
-                    # Debug tensor information
-                    logger.info(f"Processing single example: prompt='{prompt[:30]}...'")
-                    logger.info(f"Response: '{response_text[:30]}...'")
-                    logger.info(f"Reward: {reward}")
+                    # Run PPO step with the collected batch
+                    train_stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
                     
-                    # Extract only the newly generated tokens for response tensor
-                    query_tensor_no_batch = query_tensor[0]  # Remove batch dimension
-                    response_tensor_no_batch = response_tensor[0][query_tensor.shape[1]:]  # Only new tokens
-                    
-                    # Run PPO step with single example
-                    train_stats = ppo_trainer.step([query_tensor_no_batch], [response_tensor_no_batch], [reward])
-                    
-                    logger.info(f"Completed PPO step for prompt {i+1} in epoch {epoch+1}")
+                    logger.info(f"Completed PPO step for batch {i//batch_size + 1} in epoch {epoch+1}")
             
             
             # Save the trained model
