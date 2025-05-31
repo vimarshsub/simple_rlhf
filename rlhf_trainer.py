@@ -799,14 +799,35 @@ class RLHFTrainer:
                                 "top_p": 0.9,
                                 "temperature": 0.7,
                                 "pad_token_id": tokenizer.eos_token_id,
+                                # CRITICAL FIX: Add safeguards for CUDA device-side assert errors
+                                "min_length": 5,  # Prevent empty generations
+                                "bad_words_ids": None,  # Disable bad words filtering which can cause issues
+                                "no_repeat_ngram_size": 0,  # Disable n-gram penalties which can cause issues
+                                "num_beams": 1,  # Ensure we're not using beam search
+                                "use_cache": True,
                             }
                             
-                            # Generate directly with the model
-                            outputs = model.generate(
-                                input_ids=query_input_ids,
-                                attention_mask=query_attention_mask,
-                                **generation_kwargs
-                            )
+                            try:
+                                # Generate directly with the model
+                                outputs = model.generate(
+                                    input_ids=query_input_ids,
+                                    attention_mask=query_attention_mask,
+                                    **generation_kwargs
+                                )
+                            except RuntimeError as e:
+                                # If generation fails, try with a more conservative approach
+                                logger.warning(f"Generation failed with error: {str(e)}. Trying with more conservative settings.")
+                                conservative_kwargs = {
+                                    "max_new_tokens": 20,  # Shorter generation
+                                    "do_sample": False,  # Disable sampling
+                                    "pad_token_id": tokenizer.eos_token_id,
+                                    "eos_token_id": tokenizer.eos_token_id,
+                                }
+                                outputs = model.generate(
+                                    input_ids=query_input_ids,
+                                    attention_mask=query_attention_mask,
+                                    **conservative_kwargs
+                                )
                             
                             # Log shapes for debugging
                             logger.info(f"Generated output shape: {outputs.shape}")
@@ -820,6 +841,9 @@ class RLHFTrainer:
                             response_only = response_text[len(prompt_text):].strip()
                         else:
                             response_only = response_text
+                        
+                        # Log response for debugging
+                        logger.info(f"Generated response: '{response_only[:50]}...'")
                             
                         # 4. Compute reward
                         reward = compute_reward([response_only])[0]
@@ -829,15 +853,40 @@ class RLHFTrainer:
                         # Extract response tokens (excluding prompt tokens)
                         response_tokens = outputs[0][query_input_ids.shape[1]:]
                         
-                        # Add to batch collection
-                        all_query_tensors.append(query_input_ids[0])  # Remove batch dimension
-                        all_response_tensors.append(response_tokens)
-                        all_rewards.append(torch.tensor(reward, device=model.device))
+                        # CRITICAL FIX: Check for invalid values in tensors
+                        # Check query tensor for invalid values
+                        query_tensor = query_input_ids[0].detach().clone()
+                        if torch.isnan(query_tensor).any() or torch.isinf(query_tensor).any():
+                            logger.warning(f"Found invalid values in query tensor. Replacing with zeros.")
+                            query_tensor = torch.where(torch.isnan(query_tensor) | torch.isinf(query_tensor), 
+                                                     torch.zeros_like(query_tensor), 
+                                                     query_tensor)
                         
-                        # Log tensor details
-                        logger.info(f"Query tensor for PPO: shape={query_input_ids[0].shape}, device={query_input_ids.device}")
-                        logger.info(f"Response tensor for PPO: shape={response_tokens.shape}, device={outputs.device}")
-                        logger.info(f"Reward for PPO: {reward}, device={model.device}")
+                        # Check response tensor for invalid values
+                        if torch.isnan(response_tokens).any() or torch.isinf(response_tokens).any():
+                            logger.warning(f"Found invalid values in response tensor. Replacing with zeros.")
+                            response_tokens = torch.where(torch.isnan(response_tokens) | torch.isinf(response_tokens), 
+                                                        torch.zeros_like(response_tokens), 
+                                                        response_tokens)
+                        
+                        # Add to batch collection
+                        all_query_tensors.append(query_tensor)  # Use sanitized tensor
+                        all_response_tensors.append(response_tokens)  # Use sanitized tensor
+                        
+                        # Create reward tensor and check for invalid values
+                        reward_tensor = torch.tensor(reward, device=model.device)
+                        if torch.isnan(reward_tensor) or torch.isinf(reward_tensor):
+                            logger.warning(f"Found invalid reward value: {reward}. Using zero instead.")
+                            reward_tensor = torch.tensor(0.0, device=model.device)
+                        
+                        all_rewards.append(reward_tensor)
+                        
+                        # Log tensor details with value ranges
+                        logger.info(f"Query tensor for PPO: shape={query_tensor.shape}, device={query_tensor.device}, " +
+                                   f"min={query_tensor.min().item()}, max={query_tensor.max().item()}")
+                        logger.info(f"Response tensor for PPO: shape={response_tokens.shape}, device={response_tokens.device}, " +
+                                   f"min={response_tokens.min().item()}, max={response_tokens.max().item()}")
+                        logger.info(f"Reward for PPO: {reward_tensor.item()}, device={reward_tensor.device}")
                         
                         # 6. Run PPO step when we have collected batch_size examples
                         if len(all_query_tensors) == batch_size:
