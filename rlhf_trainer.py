@@ -746,14 +746,9 @@ class RLHFTrainer:
                     # Create synthetic prompts if no clear source
                     prompts = ["Generate a helpful response"] * len(dataset)
             
-<<<<<<< HEAD
             # CRITICAL FIX: Process prompts in batches of size 8 to match PPOTrainer's expectations
-=======
             # Limit prompts to avoid memory issues
             prompts = prompts[:20]  # Use only first 20 prompts for this test
-            
-            # Training loop with proper batching
->>>>>>> cf749941bdebe8a5139485b6d848b805e3e3159a
             for epoch in range(3):  # 3 epochs
                 logger.info(f"Starting epoch {epoch+1}/3")
                 
@@ -761,7 +756,6 @@ class RLHFTrainer:
                 batch_size = ppo_config.batch_size  # Use the same batch size as in PPOConfig
                 
                 for i in range(0, len(prompts), batch_size):
-<<<<<<< HEAD
                     # Get batch of prompts (pad if needed)
                     batch_end = min(i + batch_size, len(prompts))
                     batch_prompts = prompts[i:batch_end]
@@ -777,14 +771,6 @@ class RLHFTrainer:
                     # Generate responses for all prompts in batch
                     batch_responses = []
                     batch_rewards = []
-=======
-                    # Get batch of prompts
-                    batch_prompts = prompts[i:i+batch_size]
-                    
-                    # Prepare lists for batch processing
-                    query_tensors = []
-                    response_tensors = []
->>>>>>> cf749941bdebe8a5139485b6d848b805e3e3159a
                     
                     # Process each prompt in the batch
                     for prompt in batch_prompts:
@@ -808,7 +794,9 @@ class RLHFTrainer:
                                 temperature=0.7
                             )
                         
-<<<<<<< HEAD
+                        # Decode the response
+                        response_decoded = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
+                        
                         # Add to batch
                         batch_responses.append(response_decoded)
                     
@@ -828,48 +816,8 @@ class RLHFTrainer:
                     # Run PPO step with the full batch
                     train_stats = ppo_trainer.step(batch_prompts, batch_responses, batch_rewards)
                     
-                    logger.info(f"Completed PPO step for prompt {i+1} in epoch {epoch+1}")
-=======
-                        # Extract only the newly generated tokens (response part)
-                        response_tensor = response_tensor.squeeze(0)[len(query_tensor):]
-                        
-                        query_tensors.append(query_tensor)
-                        response_tensors.append(response_tensor)
-                    
-                    # Decode responses for reward computation
-                    responses = []
-                    for i, (query_tensor, response_tensor) in enumerate(zip(query_tensors, response_tensors)):
-                        # Combine query and response for decoding
-                        full_tensor = torch.cat([query_tensor, response_tensor])
-                        full_text = tokenizer.decode(full_tensor, skip_special_tokens=True)
-                        
-                        # Extract just the response part
-                        prompt_text = tokenizer.decode(query_tensor, skip_special_tokens=True)
-                        if full_text.startswith(prompt_text):
-                            response_text = full_text[len(prompt_text):].strip()
-                        else:
-                            response_text = full_text
-                        
-                        responses.append(response_text)
-                    
-                    # Compute rewards for all responses in batch
-                    try:
-                        rewards = compute_reward([f"{tokenizer.decode(q, skip_special_tokens=True)} {r}" 
-                                                for q, r in zip(query_tensors, responses)])
-                        
-                        # Convert rewards to tensors
-                        rewards = [torch.tensor(r, dtype=torch.float32) for r in rewards]
-                        
-                        # Run PPO step
-                        stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
-                        
-                        logger.info(f"Completed batch {(i//batch_size)+1} in epoch {epoch+1}")
-                        
-                    except Exception as batch_error:
-                        logger.error(f"Error in batch processing: {str(batch_error)}")
-                        # Skip this batch and continue
-                        continue
->>>>>>> cf749941bdebe8a5139485b6d848b805e3e3159a
+                    logger.info(f"Completed PPO step for batch {i//batch_size + 1} in epoch {epoch+1}")
+            
             
             # Save the trained model
             ppo_trainer.save_pretrained(output_dir)
