@@ -385,11 +385,13 @@ class RLHFTrainer:
             )
             
             # Initialize reward trainer - dataset should already have the required columns
+            # CRITICAL FIX: Explicitly set max_length for RewardDataCollatorWithPadding
             trainer = RewardTrainer(
                 model=model,
                 args=training_args,
                 train_dataset=dataset,
                 tokenizer=tokenizer,  # Use tokenizer directly in trl 0.7.0
+                max_length=512,  # Explicitly set max_length to match tokenization
             )
             
             # Train the model
