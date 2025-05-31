@@ -760,7 +760,15 @@ class RLHFTrainer:
             for epoch in range(3):  # 3 epochs
                 logger.info(f"Starting epoch {epoch+1}/3")
                 
-                # Process one prompt at a time to avoid shape issues
+                # Process prompts in batches of size 8 (as required by PPOTrainer)
+                batch_size = ppo_config.batch_size
+                
+                # Initialize batch collection lists
+                all_query_tensors = []
+                all_response_tensors = []
+                all_rewards = []
+                
+                # Process each prompt and collect into batches
                 for i, prompt in enumerate(prompts):
                     logger.info(f"Processing prompt {i+1}/{len(prompts)} in epoch {epoch+1}")
                     
@@ -821,25 +829,58 @@ class RLHFTrainer:
                         # Extract response tokens (excluding prompt tokens)
                         response_tokens = outputs[0][query_input_ids.shape[1]:]
                         
-                        # Create lists with single items (as required by PPOTrainer.step)
-                        query_tensors = [query_input_ids[0]]  # Remove batch dimension
-                        response_tensors = [response_tokens]
-                        rewards = [torch.tensor(reward, device=model.device)]
+                        # Add to batch collection
+                        all_query_tensors.append(query_input_ids[0])  # Remove batch dimension
+                        all_response_tensors.append(response_tokens)
+                        all_rewards.append(torch.tensor(reward, device=model.device))
                         
                         # Log tensor details
                         logger.info(f"Query tensor for PPO: shape={query_input_ids[0].shape}, device={query_input_ids.device}")
                         logger.info(f"Response tensor for PPO: shape={response_tokens.shape}, device={outputs.device}")
-                        logger.info(f"Reward for PPO: {rewards[0]}, device={rewards[0].device}")
+                        logger.info(f"Reward for PPO: {reward}, device={model.device}")
                         
-                        # 6. Run PPO step with single example
-                        train_stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
-                        logger.info(f"Completed PPO step for prompt {i+1} in epoch {epoch+1}")
+                        # 6. Run PPO step when we have collected batch_size examples
+                        if len(all_query_tensors) == batch_size:
+                            logger.info(f"Collected full batch of {batch_size} examples, running PPO step")
+                            
+                            # Verify batch size
+                            assert len(all_query_tensors) == batch_size, f"Query tensor count {len(all_query_tensors)} doesn't match expected {batch_size}"
+                            assert len(all_response_tensors) == batch_size, f"Response tensor count {len(all_response_tensors)} doesn't match expected {batch_size}"
+                            assert len(all_rewards) == batch_size, f"Rewards count {len(all_rewards)} doesn't match expected {batch_size}"
+                            
+                            # Run PPO step with the collected batch
+                            train_stats = ppo_trainer.step(all_query_tensors, all_response_tensors, all_rewards)
+                            logger.info(f"Completed PPO step for batch in epoch {epoch+1}")
+                            
+                            # Reset batch collection
+                            all_query_tensors = []
+                            all_response_tensors = []
+                            all_rewards = []
                         
                     except Exception as e:
                         logger.error(f"Error processing prompt {i+1}: {str(e)}")
                         logger.error(f"Traceback: {traceback.format_exc()}")
                         continue  # Skip this prompt and continue with the next one
-            
+                
+                # Handle any remaining examples at the end of the epoch
+                if len(all_query_tensors) > 0:
+                    logger.info(f"Processing remaining {len(all_query_tensors)} examples at end of epoch")
+                    
+                    # If we don't have enough examples to fill a batch, duplicate the last one
+                    while len(all_query_tensors) < batch_size:
+                        logger.info(f"Padding batch with duplicates to reach batch_size={batch_size}")
+                        all_query_tensors.append(all_query_tensors[-1])
+                        all_response_tensors.append(all_response_tensors[-1])
+                        all_rewards.append(all_rewards[-1])
+                    
+                    # Verify batch size
+                    assert len(all_query_tensors) == batch_size, f"Query tensor count {len(all_query_tensors)} doesn't match expected {batch_size}"
+                    assert len(all_response_tensors) == batch_size, f"Response tensor count {len(all_response_tensors)} doesn't match expected {batch_size}"
+                    assert len(all_rewards) == batch_size, f"Rewards count {len(all_rewards)} doesn't match expected {batch_size}"
+                    
+                    # Run PPO step with the collected batch
+                    train_stats = ppo_trainer.step(all_query_tensors, all_response_tensors, all_rewards)
+                    logger.info(f"Completed PPO step for final batch in epoch {epoch+1}")
             
             # Save the trained model
             ppo_trainer.save_pretrained(output_dir)
