@@ -691,12 +691,12 @@ class RLHFTrainer:
                 rewards = outputs.logits[:, -1].cpu().tolist()
                 return rewards
             
-            # Configure PPO training
+            # Configure PPO training with batch_size=8 to match internal expectations
             ppo_config = PPOConfig(
                 learning_rate=1.5e-5,
-                batch_size=1,  # CRITICAL FIX: Set batch_size to 1 to avoid shape mismatch
-                mini_batch_size=1,
-                gradient_accumulation_steps=4,
+                batch_size=8,  # CRITICAL FIX: Set batch_size to 8 to match internal expectations
+                mini_batch_size=8,
+                gradient_accumulation_steps=1,
                 optimize_cuda_cache=True,
                 early_stopping=True,
                 target_kl=0.1,
@@ -736,41 +736,56 @@ class RLHFTrainer:
                     # Create synthetic prompts if no clear source
                     prompts = ["Generate a helpful response"] * len(dataset)
             
-            # CRITICAL FIX: Process one prompt at a time to avoid shape mismatch
+            # CRITICAL FIX: Process prompts in batches of size 8 to match PPOTrainer's expectations
             for epoch in range(3):  # 3 epochs
                 logger.info(f"Starting epoch {epoch+1}/3")
                 
-                for i, prompt in enumerate(prompts):
-                    # Log progress
-                    logger.info(f"Processing prompt {i+1}/{len(prompts)} in epoch {epoch+1}")
+                # Process prompts in batches of size 8
+                batch_size = ppo_config.batch_size  # Use the same batch size as in PPOConfig
+                
+                for i in range(0, len(prompts), batch_size):
+                    # Get batch of prompts (pad if needed)
+                    batch_end = min(i + batch_size, len(prompts))
+                    batch_prompts = prompts[i:batch_end]
                     
-                    # Tokenize prompt
-                    encoded_prompt = tokenizer(prompt, return_tensors="pt").to(ppo_trainer.model.device)
+                    # If we don't have enough prompts to fill a batch, duplicate the last one
+                    if len(batch_prompts) < batch_size:
+                        logger.info(f"Padding batch with {batch_size - len(batch_prompts)} duplicates to reach batch_size={batch_size}")
+                        padding_needed = batch_size - len(batch_prompts)
+                        batch_prompts = list(batch_prompts) + [batch_prompts[-1]] * padding_needed
                     
-                    # Generate response
-                    response_tensor = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
-                    response_decoded = tokenizer.decode(response_tensor[0])
+                    logger.info(f"Processing batch {i//batch_size + 1}/{(len(prompts) + batch_size - 1)//batch_size} in epoch {epoch+1}")
                     
-                    # Compute reward
-                    reward = compute_reward([response_decoded])[0]
+                    # Generate responses for all prompts in batch
+                    batch_responses = []
+                    batch_rewards = []
                     
-                    # Debug tensor shapes
-                    logger.info(f"Prompt shape: {encoded_prompt.input_ids.shape}")
-                    logger.info(f"Response shape: {response_tensor.shape}")
-                    logger.info(f"Reward shape: Single scalar value")
+                    for prompt in batch_prompts:
+                        # Tokenize prompt
+                        encoded_prompt = tokenizer(prompt, return_tensors="pt").to(ppo_trainer.model.device)
+                        
+                        # Generate response
+                        response_tensor = ppo_trainer.generate(encoded_prompt.input_ids, max_new_tokens=256)
+                        response_decoded = tokenizer.decode(response_tensor[0])
+                        
+                        # Add to batch
+                        batch_responses.append(response_decoded)
                     
-                    # CRITICAL FIX: Ensure all inputs are lists with length 1
-                    prompt_list = [prompt]
-                    response_list = [response_decoded]
-                    reward_list = [reward]
+                    # Compute rewards for all responses in batch
+                    batch_rewards = compute_reward(batch_responses)
                     
-                    # Log shapes before PPO step
-                    logger.info(f"prompt_list length: {len(prompt_list)}")
-                    logger.info(f"response_list length: {len(response_list)}")
-                    logger.info(f"reward_list length: {len(reward_list)}")
+                    # Debug batch information
+                    logger.info(f"Batch size: {len(batch_prompts)}")
+                    logger.info(f"Responses batch size: {len(batch_responses)}")
+                    logger.info(f"Rewards batch size: {len(batch_rewards)}")
                     
-                    # Run PPO step
-                    train_stats = ppo_trainer.step(prompt_list, response_list, reward_list)
+                    # Verify all batch sizes match
+                    assert len(batch_prompts) == batch_size, f"Prompt batch size {len(batch_prompts)} doesn't match expected {batch_size}"
+                    assert len(batch_responses) == batch_size, f"Response batch size {len(batch_responses)} doesn't match expected {batch_size}"
+                    assert len(batch_rewards) == batch_size, f"Reward batch size {len(batch_rewards)} doesn't match expected {batch_size}"
+                    
+                    # Run PPO step with the full batch
+                    train_stats = ppo_trainer.step(batch_prompts, batch_responses, batch_rewards)
                     
                     logger.info(f"Completed PPO step for prompt {i+1} in epoch {epoch+1}")
             
