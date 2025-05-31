@@ -704,15 +704,9 @@ class RLHFTrainer:
             # Configure PPO training with batch_size=8 to match internal expectations
             ppo_config = PPOConfig(
                 learning_rate=1.5e-5,
-<<<<<<< HEAD
                 batch_size=8,  # CRITICAL FIX: Set batch_size to 8 to match internal expectations
                 mini_batch_size=8,
                 gradient_accumulation_steps=1,
-=======
-                batch_size=4,  # Reduced batch size to avoid memory issues
-                mini_batch_size=1,
-                gradient_accumulation_steps=2,
->>>>>>> cf749941bdebe8a5139485b6d848b805e3e3159a
                 optimize_cuda_cache=True,
                 early_stopping=True,
                 target_kl=0.1,
