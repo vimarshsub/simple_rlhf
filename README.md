@@ -1,52 +1,140 @@
-# Simple RLHF System
+# REINFORCE++ RLHF Implementation
 
-A simple Reinforcement Learning from Human Feedback (RLHF) system for Mistral LLM, designed for deployment on Koyeb.
+This repository contains an implementation of the REINFORCE++ algorithm for Reinforcement Learning from Human Feedback (RLHF), inspired by the OpenRLHF framework. This implementation offers several advantages over the original PPO-based approach:
 
-## Overview
+- More stable training compared to PPO
+- Faster training time
+- Better output quality
+- Efficient text generation using vLLM
 
-This system allows you to experiment with RLHF using the Mistral model. It provides:
+## Installation
 
-- Content generation with Mistral
-- CSV-based feedback collection
-- RLHF training with TRL
-- Web interface for all operations
+### Requirements
 
-## Features
+Install the required packages:
 
-- Simple CSV format for feedback
-- Example CSV generation
-- Transparent training process
-- Educational design for learning RLHF
-- Optimized for NVIDIA L4 GPU on Koyeb
+```bash
+pip install -r requirements-reinforce.txt
+```
 
-## Files
+This will install all necessary dependencies, including:
+- transformers
+- trl
+- peft
+- accelerate
+- vllm (for efficient text generation)
 
-- `feedback_db.py` - Database module for CSV import/export and feedback storage
-- `rlhf_trainer.py` - RLHF implementation using TRL
-- `gradio_app.py` - Web interface for generation, feedback, and training
-- `Dockerfile` - Ready for deployment on Koyeb
-- `requirements.txt` - All necessary dependencies
-- `deployment_instructions.md` - Step-by-step guide for deploying on Koyeb
+## Usage
 
-## Deployment
+### Training a Reward Model
 
-See `deployment_instructions.md` for detailed deployment steps.
+First, train a reward model using your preference data:
 
-## How It Works
+```bash
+python reinforce_cli.py \
+    --mode train_reward \
+    --model_name distilgpt2 \
+    --data_path example_feedback_diverse.csv \
+    --reward_model_path models/reward_model
+```
 
-1. **Generate Content**: Use the Mistral model to generate content
-2. **Provide Feedback**: Rate outputs in a CSV file and upload it
-3. **Train RLHF Model**: Train a reward model and fine-tune Mistral
-4. **Use RLHF Model**: Generate new content with your fine-tuned model
+The CSV file should contain columns for chosen and rejected responses.
 
-## Requirements
+### Training with REINFORCE++
 
-- Koyeb account
-- NVIDIA L4 GPU (as specified in your requirements)
+Once you have a reward model, train your model using REINFORCE++:
 
-## License
+```bash
+python reinforce_cli.py \
+    --mode train_rlhf \
+    --model_name distilgpt2 \
+    --data_path example_feedback_diverse.csv \
+    --reward_model_path models/reward_model \
+    --rlhf_model_path models/rlhf_model \
+    --learning_rate 1e-5 \
+    --kl_coef 0.1 \
+    --batch_size 8
+```
 
-This project is provided for educational purposes.
-# Updated for Koyeb deployment fix
-# Comprehensive debugging for 'chosen' error fix
-# Force deployment update
+### Generating Text
+
+Generate text using your trained model:
+
+```bash
+python reinforce_cli.py \
+    --mode generate \
+    --model_name distilgpt2 \
+    --rlhf_model_path models/rlhf_model \
+    --prompt "How do I check the IP address of my Linux machine?"
+```
+
+### Testing and Performance Comparison
+
+Compare the performance of standard generation vs. vLLM-accelerated generation:
+
+```bash
+python test_reinforce.py \
+    --mode compare_performance \
+    --model_name distilgpt2 \
+    --rlhf_model_path models/rlhf_model \
+    --prompt "How do I check the IP address of my Linux machine?"
+```
+
+## Key Components
+
+### REINFORCE++ Algorithm
+
+The REINFORCE++ algorithm is implemented in `reinforce_trainer.py`. It offers several advantages over PPO:
+
+1. **Simpler Implementation**: No complex clipping or value function
+2. **Faster Training**: Fewer hyperparameters to tune
+3. **More Stable**: Less sensitive to batch size and learning rate
+
+### vLLM Integration
+
+The vLLM integration in `vllm_integration.py` provides:
+
+1. **Faster Generation**: Up to 10x speedup compared to standard generation
+2. **Memory Efficiency**: Better memory utilization
+3. **Batch Processing**: Efficient handling of multiple prompts
+
+### High-Quality Training Data
+
+The repository includes a sample high-quality training dataset (`example_feedback_diverse.csv`) with 24 examples of network troubleshooting Q&A pairs. Key features:
+
+1. **Divisible by Batch Size**: 24 examples (divisible by batch_size=8)
+2. **Clear Quality Difference**: Distinct chosen/rejected responses
+3. **Domain-Specific**: Focused on network troubleshooting
+
+## Best Practices
+
+For optimal results:
+
+1. **Use a More Capable Base Model**: Consider Mistral-7B or Llama-2-7B for better performance
+2. **Ensure Dataset Size is Divisible by Batch Size**: Avoid padding/duplication issues
+3. **Use vLLM for Generation**: Significantly improves generation speed
+4. **Tune KL Coefficient**: Balance between reward maximization and staying close to the reference model
+
+## Comparison with PPO
+
+| Aspect | REINFORCE++ | PPO |
+|--------|-------------|-----|
+| Training Speed | Faster | Slower |
+| Stability | More stable | Less stable |
+| Implementation Complexity | Simpler | More complex |
+| Memory Usage | Lower | Higher |
+| Output Quality | Better | Variable |
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. **CUDA Errors**: Ensure you have enough GPU memory; reduce batch size if needed
+2. **Generation Quality**: Adjust temperature, top_p, and repetition_penalty
+3. **Training Stability**: Tune the KL coefficient and learning rate
+
+## References
+
+- [OpenRLHF GitHub Repository](https://github.com/OpenRLHF/OpenRLHF)
+- [REINFORCE++ Algorithm Paper](https://arxiv.org/abs/2204.05862)
+- [vLLM Documentation](https://github.com/vllm-project/vllm)
