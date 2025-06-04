@@ -946,7 +946,28 @@ class RLHFTrainer:
                     logger.info(f"Completed PPO step for final batch in epoch {epoch+1}")
             
             # Save the trained model
+            # CRITICAL FIX: Save both the PPO model and the base model with config.json
+            logger.info(f"Saving RLHF model to {output_dir}")
+            
+            # 1. First save the PPO trainer state
             ppo_trainer.save_pretrained(output_dir)
+            
+            # 2. Also save the base model and tokenizer explicitly to ensure config.json exists
+            base_model = ppo_trainer.model.pretrained_model
+            base_model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
+            
+            # 3. Verify config.json exists
+            config_path = os.path.join(output_dir, "config.json")
+            if os.path.exists(config_path):
+                logger.info(f"Verified config.json exists at {config_path}")
+            else:
+                logger.warning(f"config.json not found at {config_path}, creating it manually")
+                # Create minimal config if it doesn't exist
+                config = base_model.config.to_dict()
+                with open(config_path, 'w') as f:
+                    json.dump(config, f)
+            
             logger.info(f"RLHF model trained and saved to {output_dir}")
             
             return True
