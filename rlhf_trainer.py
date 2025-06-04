@@ -792,35 +792,50 @@ class RLHFTrainer:
                         
                         # 2. Generate response using model directly (not PPOTrainer.generate)
                         with torch.no_grad():
-                            # CRITICAL FIX: Use greedy decoding only to completely bypass probability tensor errors
-                            # Avoid all sampling and stochastic methods that can trigger CUDA device-side asserts
+                            # CRITICAL FIX: Use controlled decoding to prevent repetitive outputs during training
                             generation_kwargs = {
                                 "max_new_tokens": 50,
-                                "do_sample": False,  # CRITICAL: Disable sampling completely
-                                "num_beams": 1,      # Use greedy search (not beam search)
-                                "temperature": 1.0,  # Neutral temperature
-                                "top_k": 0,          # Disable top-k filtering
-                                "top_p": 1.0,        # Disable top-p filtering
+                                "do_sample": False,  # Avoid sampling to prevent CUDA errors
+                                "num_beams": 3,      # Use small beam search for better quality
+                                "repetition_penalty": 2.5,  # Strong repetition penalty
+                                "no_repeat_ngram_size": 2,  # Block repeating bigrams
                                 "pad_token_id": tokenizer.eos_token_id,
                                 "eos_token_id": tokenizer.eos_token_id,
                                 "use_cache": True,
+                                # Block common special characters that tend to repeat
+                                "bad_words_ids": [
+                                    [33],  # ! exclamation mark
+                                    [40],  # ( open parenthesis
+                                    [41],  # ) close parenthesis
+                                    [91],  # [ open bracket
+                                    [93],  # ] close bracket
+                                    [123], # { open brace
+                                    [125], # } close brace
+                                    [34],  # " quote
+                                    [39],  # ' apostrophe
+                                    [45],  # - hyphen
+                                    [61],  # = equals
+                                    [35],  # # hash
+                                    [42],  # * asterisk
+                                ]
                             }
                             
                             try:
-                                # Generate directly with the model using greedy decoding
-                                logger.info("Using greedy decoding to avoid CUDA probability tensor errors")
+                                # Generate with controlled decoding
+                                logger.info("Using controlled decoding with repetition prevention during training")
                                 outputs = model.generate(
                                     input_ids=query_input_ids,
                                     attention_mask=query_attention_mask,
                                     **generation_kwargs
                                 )
                             except RuntimeError as e:
-                                # If even greedy decoding fails, try with a more minimal approach
-                                logger.warning(f"Greedy generation failed with error: {str(e)}. Trying with minimal generation.")
+                                # If generation fails, try with a more minimal approach
+                                logger.warning(f"Generation failed with error: {str(e)}. Trying with minimal generation.")
                                 minimal_kwargs = {
                                     "max_new_tokens": 10,  # Very short generation
                                     "do_sample": False,    # No sampling
                                     "num_beams": 1,        # Greedy search
+                                    "repetition_penalty": 5.0,  # Extreme repetition penalty
                                     "pad_token_id": tokenizer.eos_token_id,
                                     "eos_token_id": tokenizer.eos_token_id,
                                     "use_cache": False,    # Disable KV cache
@@ -834,14 +849,12 @@ class RLHFTrainer:
                                         **minimal_kwargs
                                     )
                                 except RuntimeError:
-                                    # Last resort: manually append a few tokens as a minimal response
-                                    logger.warning("All generation methods failed. Creating minimal synthetic response.")
-                                    # Create a minimal response by appending the most common tokens
-                                    minimal_response = torch.cat([
-                                        query_input_ids,
-                                        torch.tensor([[tokenizer.eos_token_id] * 5], device=query_input_ids.device)
-                                    ], dim=1)
-                                    outputs = minimal_response
+                                    # Last resort: manually create a diverse response
+                                    logger.warning("All generation methods failed. Creating synthetic diverse response.")
+                                    # Create a response with common words instead of special characters
+                                    response_text = "This is a response for training purposes."
+                                    response_ids = tokenizer.encode(response_text, return_tensors="pt").to(query_input_ids.device)
+                                    outputs = torch.cat([query_input_ids, response_ids[:, 1:]], dim=1)  # Skip BOS token
                             
                             # Log shapes for debugging
                             logger.info(f"Generated output shape: {outputs.shape}")
@@ -929,12 +942,50 @@ class RLHFTrainer:
                 if len(all_query_tensors) > 0:
                     logger.info(f"Processing remaining {len(all_query_tensors)} examples at end of epoch")
                     
-                    # If we don't have enough examples to fill a batch, duplicate the last one
-                    while len(all_query_tensors) < batch_size:
-                        logger.info(f"Padding batch with duplicates to reach batch_size={batch_size}")
-                        all_query_tensors.append(all_query_tensors[-1])
-                        all_response_tensors.append(all_response_tensors[-1])
-                        all_rewards.append(all_rewards[-1])
+                    # IMPROVED APPROACH: Instead of duplicating the last example multiple times,
+                    # use a more diverse padding strategy to avoid biasing the model
+                    if len(all_query_tensors) < batch_size:
+                        logger.info(f"Using diverse padding strategy to reach batch_size={batch_size}")
+                        
+                        # Calculate how many more examples we need
+                        needed = batch_size - len(all_query_tensors)
+                        
+                        # Use a mix of different examples from the current batch and earlier in the dataset
+                        # to create more diversity in the padding
+                        for i in range(needed):
+                            # Alternate between examples from the current batch and earlier prompts
+                            if i % 2 == 0 and len(all_query_tensors) > 0:
+                                # Use a different example from the current batch each time
+                                idx = i % len(all_query_tensors)
+                                logger.info(f"Padding with diverse example {idx} from current batch")
+                                all_query_tensors.append(all_query_tensors[idx])
+                                all_response_tensors.append(all_response_tensors[idx])
+                                all_rewards.append(all_rewards[idx])
+                            else:
+                                # Create a synthetic example with different token values
+                                # This helps prevent the model from learning repetitive patterns
+                                logger.info(f"Creating synthetic diverse example for padding")
+                                
+                                # Create a query tensor with different token values
+                                synthetic_query = torch.randint(
+                                    100, 1000,  # Use a range of token IDs different from special tokens
+                                    size=(query_tensor.shape[0],),
+                                    device=model.device
+                                )
+                                
+                                # Create a response with different token values
+                                synthetic_response = torch.randint(
+                                    100, 1000,  # Use a range of token IDs different from special tokens
+                                    size=(min(10, response_tokens.shape[0]),),
+                                    device=model.device
+                                )
+                                
+                                # Use a neutral reward
+                                synthetic_reward = torch.tensor(0.0, device=model.device)
+                                
+                                all_query_tensors.append(synthetic_query)
+                                all_response_tensors.append(synthetic_response)
+                                all_rewards.append(synthetic_reward)
                     
                     # Verify batch size
                     assert len(all_query_tensors) == batch_size, f"Query tensor count {len(all_query_tensors)} doesn't match expected {batch_size}"
@@ -1035,7 +1086,22 @@ class RLHFTrainer:
                     "pad_token_id": tokenizer.eos_token_id,
                     "eos_token_id": tokenizer.eos_token_id,
                     "use_cache": True,
-                    "bad_words_ids": [[33]]     # Block exclamation mark token (33 is "!" in many tokenizers)
+                    # Block common special characters that tend to repeat
+                    "bad_words_ids": [
+                        [33],  # ! exclamation mark
+                        [40],  # ( open parenthesis
+                        [41],  # ) close parenthesis
+                        [91],  # [ open bracket
+                        [93],  # ] close bracket
+                        [123], # { open brace
+                        [125], # } close brace
+                        [34],  # " quote
+                        [39],  # ' apostrophe
+                        [45],  # - hyphen
+                        [61],  # = equals
+                        [35],  # # hash
+                        [42],  # * asterisk
+                    ]
                 }
                 
                 try:
